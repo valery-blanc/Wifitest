@@ -1,0 +1,23 @@
+# Déploiement du webservice WifiTest sur Fez (actif) + Avignon (secours).
+# Conteneur ISOLÉ (ne touche pas GQQFM). Routé par Traefik via le réseau `web`.
+# Tokens dans deploy/.env (jamais commité). Voir deploy/README.md.
+services:
+  wifitest:
+    build: ../webservice
+    image: wifitest-webservice:latest
+    container_name: wifitest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      WIFITEST_DB: /data/jobs.db
+    volumes:
+      - wifitest-data:/data
+    networks:
+      - web
+
+volumes:
+  wifitest-data:
+
+networks:
+  web:
+    external: true

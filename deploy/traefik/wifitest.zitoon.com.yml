@@ -1,0 +1,17 @@
+# À copier dans ~/docker/traefik/dynamic/wifitest.zitoon.com.yml sur Fez ET Avignon.
+# Traefik recharge automatiquement. Cert via HTTP-01 (certResolver letsencrypt).
+http:
+  routers:
+    wifitest:
+      rule: "Host(`wifitest.zitoon.com`)"
+      entryPoints:
+        - websecure
+      service: wifitest-svc
+      priority: 10
+      tls:
+        certResolver: letsencrypt
+  services:
+    wifitest-svc:
+      loadBalancer:
+        servers:
+          - url: "http://wifitest:8000"
