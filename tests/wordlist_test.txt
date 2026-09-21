@@ -1,0 +1,6 @@
+password
+12345678
+motdepasse
+admin1234
+hashcat!
+Livebox-0000

@@ -1,0 +1,49 @@
+# Artefacts de capture — contiennent des identifiants WiFi, NE JAMAIS committer
+*.pcap
+*.pcapng
+*.cap
+*.hccapx
+*.22000
+*.hc22000
+captures/
+handshakes/
+
+# Wordlists / résultats de cracking
+*.pot
+hashcat.potfile
+wordlists/
+cracked.txt
+
+# Secrets / tokens
+*.key
+.env
+.env.*
+secrets/
+
+# Build — Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.apk
+*.aab
+
+# Build — ESP32 / ESP-IDF
+firmware-esp32/build/
+sdkconfig.old
+
+# Build — Flipper (ufbt)
+flipper-app/dist/
+.ufbt/
+
+# Python — serveur Anqa
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
