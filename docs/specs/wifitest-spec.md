@@ -1,6 +1,6 @@
 # WifiTest — Spécification (source de vérité)
 
-> **Version** : v0.3 (M0 code validé en local, 2026-09-21)
+> **Version** : v0.4 (M0 déployé Fez+Avignon ; M1 diagnostiqué, 2026-09-21)
 > **Nature** : banc d'audit de robustesse de mot de passe WiFi (test de sécurité autorisé).
 > Ce fichier reflète à tout moment le comportement RÉEL du code. À mettre à jour à chaque
 > FEAT-XXX / BUG-XXX.
@@ -60,6 +60,12 @@ port ouvert sur Anqa (marche derrière la box, aucune config réseau).
 - **Firmware** : partir d'un **firmware éprouvé** (ESP32 Marauder, ou ESP32 WiFi Penetration
   Tool de Risinek) plutôt que réécrire le monitor mode. Custom plus tard si besoin.
 - **Sortie** : hash au format **`22000`** (unifié PMKID + EAPOL), lisible en USB-CDC.
+- **État matériel constaté (2026-09-21, sur Bruxelles)** : Flipper en **firmware officiel**
+  (dev `c9ab2b68`), **aucune app WiFi/Marauder/ESP installée** ; dev board branchée sur le
+  **GPIO du Flipper uniquement** (pas sur son propre USB → ESP32 non joignable, firmware
+  inconnu). ⚠️ **Pré-requis M1** : brancher l'USB-C **propre de la dev board** sur un PC
+  (Bruxelles) pour flasher le firmware de capture (esptool) et parler à l'ESP32 en USB-CDC.
+  Le montage sur le Flipper ne suffit pas — l'archi n'utilise pas le Flipper dans le flux.
 
 ### 4.2 App Flipper (`flipper-app/`) — OPTIONNELLE, hors chemin critique
 Le Flipper n'est pas requis dans le flux de données (USB-CDC va de l'ESP32 au téléphone).
