@@ -1,0 +1,18 @@
+# À copier dans ~/docker/traefik/dynamic/pcap.zitoon.com.yml sur Fez ET Avignon.
+# Même conteneur `wifitest` que wifitest.zitoon.com — routes vers le port 8000.
+# L'UI est protégée par mot de passe au niveau applicatif (page login), pas besoin de basicauth Traefik.
+http:
+  routers:
+    pcap:
+      rule: "Host(`pcap.zitoon.com`)"
+      entryPoints:
+        - websecure
+      service: pcap-svc
+      priority: 10
+      tls:
+        certResolver: letsencrypt
+  services:
+    pcap-svc:
+      loadBalancer:
+        servers:
+          - url: "http://wifitest:8000"

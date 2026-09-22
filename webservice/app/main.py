@@ -1,29 +1,56 @@
-"""WifiTest — webservice / file de jobs (plan de contrôle).
+"""WifiTest — webservice : file de jobs (workers) + UI pcap.zitoon.com.
 
-Le téléphone soumet un hash 22000 et poll le résultat ; les workers GPU (Anqa / RunPod)
-tirent les jobs en sortie HTTPS. Deux tokens distincts (téléphone / worker).
+- Workers (Anqa / RunPod) : endpoints token (/jobs/next, /jobs/{id}/result, ...).
+- UI humaine (pcap.zitoon.com) : login mot de passe + cookie de session, upload pcap →
+  hcxpcapngtool → hash 22000 → job(s) → affichage SSID + mot de passe (poll, asynchrone).
 
-Déploiement : conteneur Docker derrière Traefik sur Fez (`wifitest.zitoon.com`).
+Déployé en conteneur Docker derrière Traefik sur Fez + Avignon.
 """
 from __future__ import annotations
 
+import json
 import os
+import secrets
+import socket
+import subprocess
+import tempfile
+import time
+import urllib.request
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel, Field
 
 from . import db
 
+HERE = os.path.dirname(__file__)
+
 PHONE_TOKEN = os.environ.get("WIFITEST_PHONE_TOKEN", "")
 WORKER_TOKEN = os.environ.get("WIFITEST_WORKER_TOKEN", "")
+UI_PASSWORD = os.environ.get("WIFITEST_UI_PASSWORD", "")
+SESSION_SECRET = os.environ.get("WIFITEST_SESSION_SECRET", "") or secrets.token_hex(32)
+MAX_UPLOAD = int(os.environ.get("WIFITEST_MAX_UPLOAD", str(60 * 1024 * 1024)))  # 60 Mo
 
-app = FastAPI(title="WifiTest webservice", version="0.1")
+SESSION_TTL = 12 * 3600
+COOKIE = "wt_session"
+MAX_FAILS = 6
+LOCK_SECONDS = 300
+
+_ser = URLSafeTimedSerializer(SESSION_SECRET, salt="wt-ui")
+_fails: dict[str, tuple[int, float]] = {}  # ip -> (count, lock_until)
+
+app = FastAPI(title="WifiTest", version="1.0")
+app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="static")
 
 
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
 
+
+# ---- auth workers / téléphone (token) --------------------------------------
 
 def _check(authorization: str | None, expected: str) -> None:
     if not expected:
@@ -40,10 +67,272 @@ def worker_auth(authorization: str | None = Header(default=None)) -> None:
     _check(authorization, WORKER_TOKEN)
 
 
-# ---- Modèles ---------------------------------------------------------------
+# ---- auth UI (mot de passe + session) --------------------------------------
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _lock_remaining(ip: str) -> int:
+    count, until = _fails.get(ip, (0, 0.0))
+    return max(0, int(until - time.time())) if count >= MAX_FAILS else 0
+
+
+def _register_fail(ip: str) -> int:
+    count, _ = _fails.get(ip, (0, 0.0))
+    count += 1
+    until = time.time() + LOCK_SECONDS if count >= MAX_FAILS else 0.0
+    _fails[ip] = (count, until)
+    return max(0, MAX_FAILS - count)
+
+
+def _reset_fails(ip: str) -> None:
+    _fails.pop(ip, None)
+
+
+def _valid_session(cookie: str | None) -> bool:
+    if not cookie:
+        return False
+    try:
+        _ser.loads(cookie, max_age=SESSION_TTL)
+        return True
+    except (BadSignature, SignatureExpired):
+        return False
+
+
+def require_session(request: Request) -> None:
+    if not _valid_session(request.cookies.get(COOKIE)):
+        raise HTTPException(401, "Session requise")
+
+
+# ---- pages UI --------------------------------------------------------------
+
+def _page(path: str) -> str:
+    with open(os.path.join(HERE, "static", path), encoding="utf-8") as f:
+        return f.read()
+
+
+@app.get("/", response_class=HTMLResponse)
+def home(request: Request) -> HTMLResponse:
+    return HTMLResponse(_page("app.html" if _valid_session(request.cookies.get(COOKIE)) else "login.html"))
+
+
+@app.post("/api/login")
+async def login(request: Request):
+    ip = _client_ip(request)
+    locked = _lock_remaining(ip)
+    if locked:
+        return JSONResponse({"locked": locked}, status_code=429)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    pw = (body or {}).get("password", "")
+    if UI_PASSWORD and secrets.compare_digest(str(pw), UI_PASSWORD):
+        _reset_fails(ip)
+        resp = JSONResponse({"ok": True})
+        resp.set_cookie(COOKIE, _ser.dumps({"ok": True}), httponly=True, secure=True,
+                        samesite="lax", max_age=SESSION_TTL, path="/")
+        return resp
+    reste = _register_fail(ip)
+    locked = _lock_remaining(ip)
+    if locked:
+        return JSONResponse({"locked": locked}, status_code=429)
+    return JSONResponse({"reste": reste}, status_code=401)
+
+
+@app.post("/api/logout")
+def logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(COOKIE, path="/")
+    return resp
+
+
+@app.post("/api/upload")
+async def upload(request: Request, file: UploadFile = File(...)):
+    require_session(request)
+    data = await file.read()
+    if len(data) > MAX_UPLOAD:
+        raise HTTPException(413, f"Fichier trop gros (max {MAX_UPLOAD // (1024*1024)} Mo)")
+    if not data:
+        raise HTTPException(422, "Fichier vide")
+
+    with tempfile.TemporaryDirectory() as td:
+        pcap = os.path.join(td, "in.pcap")
+        out = os.path.join(td, "out.22000")
+        with open(pcap, "wb") as f:
+            f.write(data)
+        try:
+            subprocess.run(["hcxpcapngtool", "-o", out, pcap],
+                           capture_output=True, text=True, timeout=120)
+        except FileNotFoundError:
+            raise HTTPException(500, "hcxpcapngtool absent du serveur")
+        except subprocess.TimeoutExpired:
+            raise HTTPException(500, "Conversion trop longue (timeout)")
+
+        lines = []
+        if os.path.exists(out):
+            with open(out, encoding="utf-8", errors="replace") as f:
+                lines = [ln.strip() for ln in f if ln.strip().startswith("WPA*")]
+
+    seen: set[str] = set()
+    created = []
+    for line in lines:
+        if line in seen:
+            continue
+        seen.add(line)
+        parts = line.split("*")
+        ssid = ""
+        if len(parts) > 5:
+            try:
+                ssid = bytes.fromhex(parts[5]).decode("utf-8", errors="replace")
+            except ValueError:
+                ssid = parts[5]
+        jid = db.create_job(line, ssid or None, None, None)
+        created.append({"job_id": jid, "ssid": ssid})
+
+    if not created:
+        return JSONResponse({"created": [], "message":
+            "Aucun hash exploitable dans ce pcap (pas de handshake complet M1/M2 ni de PMKID)."})
+    return {"created": created, "message": f"{len(created)} réseau(x) → mis en file pour crack."}
+
+
+@app.get("/api/jobs")
+def api_jobs(request: Request):
+    require_session(request)
+    out = []
+    for j in db.list_jobs(200):
+        out.append({
+            "job_id": j["id"], "ssid": j["ssid"], "status": j["status"],
+            "password": j["password"], "error": j["error"],
+            "progress": j["progress"], "created_at": j["created_at"],
+            "worker_id": j["worker_id"],
+        })
+    return {"jobs": out}
+
+
+# ---- infra : Anqa (WOL) / RunPod (crédit) / mode de dispatch ---------------
+
+POWER_URL = os.environ.get("WIFITEST_POWER_URL", "http://192.168.0.250:8533").rstrip("/")
+POWER_TOKEN = os.environ.get("POWER_TOKEN", "")
+ANQA_ENDPOINTS = [("192.168.0.133", 22), ("192.168.0.112", 22)]
+SETTINGS_FILE = os.environ.get("WIFITEST_SETTINGS", "/data/settings.json")
+DEFAULT_MODE = "auto"  # anqa | pod | auto (pod si Anqa indisponible)
+
+
+def _settings() -> dict:
+    try:
+        with open(SETTINGS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_settings(s: dict) -> None:
+    tmp = SETTINGS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(s, f)
+    os.replace(tmp, SETTINGS_FILE)
+
+
+def get_mode() -> str:
+    m = _settings().get("mode", DEFAULT_MODE)
+    return m if m in ("anqa", "pod", "auto") else DEFAULT_MODE
+
+
+def anqa_reachable() -> bool:
+    for host, port in ANQA_ENDPOINTS:
+        try:
+            with socket.create_connection((host, port), timeout=2):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _runpod_gql(query: str, key: str) -> dict:
+    body = json.dumps({"query": query}).encode()
+    req = urllib.request.Request(
+        "https://api.runpod.io/graphql?api_key=" + key, data=body,
+        headers={"Content-Type": "application/json", "User-Agent": "curl/8.0"})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.loads(r.read().decode())
+
+
+def _runpod_balance(key: str) -> dict | None:
+    try:
+        d = _runpod_gql("query{myself{clientBalance currentSpendPerHr spendLimit}}", key)
+        m = (d.get("data") or {}).get("myself") or {}
+        return {"balance": m.get("clientBalance"), "spend_hr": m.get("currentSpendPerHr"),
+                "limit": m.get("spendLimit")}
+    except Exception:
+        return None
+
+
+def runpod_accounts() -> list[dict]:
+    keys = []
+    k1 = os.environ.get("RUNPOD_API_KEY", "").strip()
+    if k1:
+        keys.append(("Compte 1", k1))
+    i = 2
+    while True:
+        k = os.environ.get(f"RUNPOD_API_KEY_{i}", "").strip()
+        if not k:
+            break
+        keys.append((f"Compte {i}", k))
+        i += 1
+    out = []
+    for label, key in keys:
+        b = _runpod_balance(key)
+        out.append({"label": label, "balance": (b or {}).get("balance"),
+                    "spend_hr": (b or {}).get("spend_hr"), "ok": b is not None})
+    return out
+
+
+def _power(path: str) -> dict:
+    req = urllib.request.Request(POWER_URL + path, data=b"", method="POST",
+                                 headers={"X-Power-Token": POWER_TOKEN})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.loads(r.read().decode())
+
+
+@app.get("/api/status")
+def api_status(request: Request):
+    require_session(request)
+    return {"anqa": anqa_reachable(), "mode": get_mode(), "runpod": runpod_accounts()}
+
+
+@app.post("/api/anqa/wake")
+def api_wake(request: Request):
+    require_session(request)
+    try:
+        return {"ok": True, "resp": _power("/anqa/on")}
+    except Exception as exc:
+        raise HTTPException(502, f"gqqfm-power injoignable: {exc}")
+
+
+class ModeReq(BaseModel):
+    mode: str
+
+
+@app.post("/api/mode")
+def api_set_mode(request: Request, m: ModeReq):
+    require_session(request)
+    if m.mode not in ("anqa", "pod", "auto"):
+        raise HTTPException(422, "mode invalide")
+    s = _settings()
+    s["mode"] = m.mode
+    _save_settings(s)
+    return {"ok": True, "mode": m.mode}
+
+
+# ---- endpoints file de jobs (téléphone / workers) --------------------------
 
 class CreateJob(BaseModel):
-    hash_22000: str = Field(..., description="Ligne hashcat mode 22000 (WPA*01*... ou WPA*02*...)")
+    hash_22000: str = Field(...)
     ssid: str | None = None
     bssid: str | None = None
     attack_plan: dict | None = None
@@ -55,12 +344,10 @@ class Progress(BaseModel):
 
 
 class Result(BaseModel):
-    status: str  # found | not_found | error
+    status: str
     password: str | None = None
     error: str | None = None
 
-
-# ---- Endpoints téléphone ---------------------------------------------------
 
 @app.get("/health")
 def health() -> dict:
@@ -75,19 +362,15 @@ def submit_job(req: CreateJob) -> dict:
     return {"job_id": job_id}
 
 
-# ⚠️ Route STATIQUE déclarée AVANT la route dynamique /jobs/{job_id} : sinon FastAPI
-# capte /jobs/next comme {job_id}="next" (et l'auth téléphone au lieu de l'auth worker).
+# ⚠️ Route STATIQUE avant la route dynamique /jobs/{job_id}.
 @app.get("/jobs/next", dependencies=[Depends(worker_auth)])
 def claim_job(worker_id: str = "worker") -> dict:
     job = db.claim_next_job(worker_id)
     if job is None:
         return {"job": None}
     return {"job": {
-        "job_id": job["id"],
-        "hash_22000": job["hash_22000"],
-        "ssid": job["ssid"],
-        "bssid": job["bssid"],
-        "attack_plan": job["attack_plan"],
+        "job_id": job["id"], "hash_22000": job["hash_22000"], "ssid": job["ssid"],
+        "bssid": job["bssid"], "attack_plan": job["attack_plan"],
     }}
 
 
@@ -96,19 +379,10 @@ def job_status(job_id: str) -> dict:
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(404, "Unknown job")
-    # On n'expose pas le hash au client qui poll (déjà connu de lui) — surface minimale.
-    return {
-        "job_id": job["id"],
-        "status": job["status"],
-        "progress": job["progress"],
-        "tried": job["tried"],
-        "password": job["password"],
-        "error": job["error"],
-        "ssid": job["ssid"],
-    }
+    return {"job_id": job["id"], "status": job["status"], "progress": job["progress"],
+            "tried": job["tried"], "password": job["password"], "error": job["error"],
+            "ssid": job["ssid"]}
 
-
-# ---- Endpoints worker (pull) -----------------------------------------------
 
 @app.post("/jobs/{job_id}/progress", dependencies=[Depends(worker_auth)])
 def post_progress(job_id: str, p: Progress) -> dict:

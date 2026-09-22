@@ -68,3 +68,12 @@ hoppe et rate les trames de l'AP (M1/M3).
 
 ## Done
 - [x] Bootstrap `/vb-init` : CLAUDE.md, arborescence `docs/`, spec, `.gitignore`, git init + remote (2026-09-21)
+
+### FEAT-001 — Interface web pcap.zitoon.com
+- [x] UI (design monitoring) : login mot de passe + anti-bruteforce, cookie session
+- [x] Upload pcap → hcxpcapngtool (dans le conteneur) → hash 22000 + SSID → job(s)
+- [x] Tableau des jobs (SSID, mot de passe, date/heure, worker, statut) : **triable par colonne**, cellules copiables (mdp clic-copie)
+- [x] Bandeau : **statut Anqa + bouton WOL** (via gqqfm-power), **3 modes** (anqa/pod/auto), **crédit RunPod** (2 comptes, myself.clientBalance)
+- [x] Déployé Fez + Avignon (Traefik pcap.zitoon.com), testé (login/upload/status/mode ; power joignable)
+- [ ] **Phase 2** : dispatcher + pod RunPod (hashcat) auto-spin/stop selon le mode ; worker Anqa permanent
+- [ ] Test utilisateur (demain) : UI complète + vrai crack via Anqa (WOL) et via pod RunPod

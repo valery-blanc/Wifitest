@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>zitoon — pcap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Manrope:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="ambient"></div>
+
+<div class="login-wrap">
+  <form class="login-card" id="form" autocomplete="on">
+    <div class="brand">
+      <span class="word">zit<span>oo</span>n</span>
+      <span class="sep">/</span>
+      <span class="sub">pcap</span>
+    </div>
+
+    <h1>Audit WiFi</h1>
+    <p>Upload de capture, extraction du hash et crack. Accès réservé.</p>
+
+    <div class="field">
+      <label for="password">Mot de passe</label>
+      <input type="password" id="password" name="password" autocomplete="current-password"
+             required autofocus spellcheck="false">
+    </div>
+
+    <button class="btn btn-primary" type="submit" id="go">Entrer</button>
+    <div class="err" id="err" role="alert"></div>
+  </form>
+</div>
+
+<script>
+const form = document.getElementById('form');
+const err  = document.getElementById('err');
+const go   = document.getElementById('go');
+const pw   = document.getElementById('password');
+
+const fmt = (s) => s >= 60
+  ? Math.floor(s / 60) + ' min ' + String(s % 60).padStart(2, '0') + ' s'
+  : s + ' s';
+
+let tick = null;
+function lock(seconds) {
+  clearInterval(tick);
+  pw.disabled = go.disabled = true;
+  go.textContent = 'Verrouillé';
+  let reste = seconds;
+  const show = () => {
+    if (reste <= 0) {
+      clearInterval(tick);
+      pw.disabled = go.disabled = false;
+      go.textContent = 'Entrer';
+      err.textContent = 'Vous pouvez réessayer.';
+      pw.focus();
+      return;
+    }
+    err.textContent = 'Trop d’essais — réessayez dans ' + fmt(reste);
+    reste -= 1;
+  };
+  show();
+  tick = setInterval(show, 1000);
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault();
+  err.textContent = '';
+  go.disabled = true;
+  go.textContent = 'Vérification…';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pw.value })
+    });
+    if (r.ok) { location.href = '/'; return; }
+    const d = await r.json().catch(() => ({}));
+    if (d.locked) { return lock(d.locked); }
+    err.textContent = Number.isFinite(d.reste) && d.reste > 0
+      ? 'Mot de passe incorrect — encore ' + d.reste + ' essai' + (d.reste > 1 ? 's' : '')
+      : (d.error || 'Connexion refusée.');
+  } catch (_) {
+    err.textContent = 'Serveur injoignable.';
+  }
+  go.disabled = false;
+  go.textContent = 'Entrer';
+});
+</script>
+</body>
+</html>

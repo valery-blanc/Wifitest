@@ -78,6 +78,14 @@ def get_job(job_id: str) -> dict | None:
     return _row_to_job(row) if row else None
 
 
+def list_jobs(limit: int = 100) -> list[dict]:
+    with _lock:
+        rows = _conn.execute(
+            "SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [_row_to_job(r) for r in rows]
+
+
 def _requeue_stale(now: float) -> None:
     """Remet en file les jobs 'running' dont le worker s'est tu (appelé sous _lock)."""
     _conn.execute(

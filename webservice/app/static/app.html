@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>zitoon — pcap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400..700&family=Manrope:wght@400..700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div class="ambient"></div>
+
+<nav class="nav">
+  <div class="shell nav-inner">
+    <div class="brand">
+      <span class="word">zit<span>oo</span>n</span>
+      <span class="sep">/</span>
+      <span class="sub">pcap</span>
+    </div>
+    <div class="nav-right">
+      <span class="chip" id="anqa-chip"><span class="dot" id="anqa-dot"></span> Anqa <b id="anqa-state">…</b></span>
+      <button class="btn btn-ghost small" id="wol" hidden>Réveiller (WOL)</button>
+      <button class="btn btn-ghost small" id="logout">Déconnexion</button>
+    </div>
+  </div>
+</nav>
+
+<main class="shell">
+  <div class="head">
+    <span class="sec-tag">Audit de robustesse WiFi</span>
+    <h1>Upload → <em>hash</em> → crack</h1>
+    <p>Dépose une capture <b>.pcap</b> (handshake WPA/WPA2 ou PMKID). Le serveur extrait le
+      hash (hcxpcapngtool) et le met en file ; un worker GPU le cracke et le résultat
+      s'affiche ici — même longtemps après.</p>
+  </div>
+
+  <div class="controls">
+    <div class="modes">
+      <span class="mono">Cracker sur</span>
+      <div class="tabs" id="modes">
+        <button class="tab" data-m="anqa">Anqa seul</button>
+        <button class="tab" data-m="pod">Pod RunPod seul</button>
+        <button class="tab" data-m="auto">Pod si Anqa down</button>
+      </div>
+    </div>
+    <div class="credit" id="credit"></div>
+  </div>
+
+  <div class="drop" id="drop">
+    <input type="file" id="file" accept=".pcap,.pcapng,.cap" hidden>
+    <h2>Glisse un .pcap ici</h2>
+    <p>ou clique pour choisir un fichier</p>
+    <div class="file" id="fname"></div>
+    <div class="upbar">
+      <button class="btn btn-primary" id="send" disabled>Extraire + cracker</button>
+    </div>
+    <div class="msg" id="msg"></div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="jobs">
+      <thead><tr>
+        <th class="sort" data-k="ssid">SSID</th>
+        <th class="sort" data-k="password">Mot de passe</th>
+        <th class="sort" data-k="created_at">Date/heure</th>
+        <th class="sort" data-k="worker_id">Worker</th>
+        <th class="sort" data-k="status">Statut</th>
+      </tr></thead>
+      <tbody id="tbody"><tr class="tbl-empty"><td colspan="5">Aucun job pour l'instant.</td></tr></tbody>
+    </table>
+  </div>
+</main>
+
+<footer class="foot shell">
+  <span class="mono">wifitest · pcap.zitoon.com</span>
+  <span class="mono">réseaux possédés / autorisés uniquement</span>
+</footer>
+
+<script>
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const fname = document.getElementById('fname');
+const send = document.getElementById('send');
+const msg = document.getElementById('msg');
+const cards = document.getElementById('cards');
+let chosen = null;
+
+document.getElementById('logout').addEventListener('click', async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  location.href = '/';
+});
+
+drop.addEventListener('click', (e) => { if (e.target.tagName !== 'BUTTON') fileInput.click(); });
+['dragover', 'dragenter'].forEach(ev => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.add('over');
+}));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, (e) => {
+  e.preventDefault(); drop.classList.remove('over');
+}));
+drop.addEventListener('drop', (e) => { if (e.dataTransfer.files[0]) pick(e.dataTransfer.files[0]); });
+fileInput.addEventListener('change', () => { if (fileInput.files[0]) pick(fileInput.files[0]); });
+
+function pick(f) {
+  chosen = f;
+  fname.textContent = f.name + ' — ' + (f.size / 1024 / 1024).toFixed(2) + ' Mo';
+  send.disabled = false;
+  msg.textContent = '';
+}
+
+send.addEventListener('click', async () => {
+  if (!chosen) return;
+  send.disabled = true;
+  msg.className = 'msg';
+  msg.textContent = 'Extraction du hash…';
+  const fd = new FormData();
+  fd.append('file', chosen);
+  try {
+    const r = await fetch('/api/upload', { method: 'POST', body: fd });
+    if (r.status === 401) { location.href = '/'; return; }
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) { msg.className = 'msg err'; msg.textContent = d.detail || 'Erreur.'; send.disabled = false; return; }
+    msg.className = (d.created && d.created.length) ? 'msg ok' : 'msg err';
+    msg.textContent = d.message || 'OK';
+    chosen = null; fileInput.value = ''; fname.textContent = '';
+    refresh();
+  } catch (_) {
+    msg.className = 'msg err'; msg.textContent = 'Upload échoué.'; send.disabled = false;
+  }
+});
+
+const esc = (s) => (s == null ? '' : String(s).replace(/[&<>"]/g, c => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])));
+
+function dt(ts) {
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
+    + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+}
+
+const STATES = {
+  queued:   { c: '',         t: 'en file' },
+  running:  { c: 'running',  t: 'crack…' },
+  found:    { c: 'found',    t: 'trouvé' },
+  not_found:{ c: 'notfound', t: 'non trouvé' },
+  error:    { c: 'error',    t: 'erreur' },
+};
+
+let jobs = [];
+let sortKey = 'created_at', sortDir = -1;
+
+document.querySelectorAll('th.sort').forEach(th => th.addEventListener('click', () => {
+  const k = th.dataset.k;
+  if (sortKey === k) sortDir = -sortDir;
+  else { sortKey = k; sortDir = (k === 'created_at') ? -1 : 1; }
+  render();
+}));
+
+function cmp(a, b) {
+  let x = a[sortKey], y = b[sortKey];
+  if (sortKey === 'created_at') { return ((x || 0) - (y || 0)) * sortDir; }
+  x = (x == null ? '' : String(x)).toLowerCase();
+  y = (y == null ? '' : String(y)).toLowerCase();
+  return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+}
+
+function pwCell(j) {
+  if (j.status === 'found') return '<span class="val" title="cliquer pour copier">' + esc(j.password) + '</span>';
+  if (j.status === 'not_found') return '<span class="none">non trouvé</span>';
+  if (j.status === 'error') return '<span class="none">—</span>';
+  return '<span class="pending"><span class="spinner"></span> en cours…</span>';
+}
+
+function rowHtml(j) {
+  const st = STATES[j.status] || STATES.queued;
+  let status = '<span class="badge ' + st.c + '">' + st.t + '</span>';
+  if (j.status === 'error' && j.error) status += '<div class="err">' + esc(j.error) + '</div>';
+  return '<tr>'
+    + '<td class="c-ssid">' + (esc(j.ssid) || '<span style="color:var(--ink-4)">inconnu</span>') + '</td>'
+    + '<td class="c-pw">' + pwCell(j) + '</td>'
+    + '<td class="c-when">' + dt(j.created_at) + '</td>'
+    + '<td class="c-worker">' + (esc(j.worker_id) || '—') + '</td>'
+    + '<td class="c-status">' + status + '</td>'
+    + '</tr>';
+}
+
+function render() {
+  document.querySelectorAll('th.sort').forEach(th => {
+    const a = th.querySelector('.arr'); if (a) a.remove();
+    if (th.dataset.k === sortKey)
+      th.insertAdjacentHTML('beforeend', '<span class="arr">' + (sortDir > 0 ? '▲' : '▼') + '</span>');
+  });
+  const tb = document.getElementById('tbody');
+  if (!jobs.length) { tb.innerHTML = '<tr class="tbl-empty"><td colspan="5">Aucun job pour l\'instant.</td></tr>'; return; }
+  tb.innerHTML = jobs.slice().sort(cmp).map(rowHtml).join('');
+}
+
+// Clic sur un mot de passe trouvé → copie dans le presse-papier (le texte reste sélectionnable).
+document.getElementById('tbody').addEventListener('click', (e) => {
+  const el = e.target.closest('.c-pw .val');
+  if (!el || !navigator.clipboard) return;
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 900);
+  }).catch(() => {});
+});
+
+async function refresh() {
+  try {
+    const r = await fetch('/api/jobs');
+    if (r.status === 401) { location.href = '/'; return; }
+    const d = await r.json();
+    jobs = d.jobs || [];
+    render();
+  } catch (_) { /* réseau : on retentera */ }
+}
+
+refresh();
+setInterval(refresh, 5000);
+
+// --- statut infra : Anqa (WOL) / RunPod (crédit) / mode ---
+const anqaDot = document.getElementById('anqa-dot');
+const anqaState = document.getElementById('anqa-state');
+const wol = document.getElementById('wol');
+const credit = document.getElementById('credit');
+const modesEl = document.getElementById('modes');
+
+function setMode(m) {
+  modesEl.querySelectorAll('.tab').forEach(b => b.classList.toggle('is-active', b.dataset.m === m));
+}
+
+modesEl.querySelectorAll('.tab').forEach(b => b.addEventListener('click', async () => {
+  const m = b.dataset.m;
+  setMode(m);
+  try {
+    await fetch('/api/mode', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode: m }) });
+  } catch (_) {}
+}));
+
+wol.addEventListener('click', async () => {
+  wol.disabled = true; wol.textContent = 'Réveil…';
+  try { await fetch('/api/anqa/wake', { method: 'POST' }); } catch (_) {}
+  setTimeout(() => { wol.disabled = false; wol.textContent = 'Réveiller (WOL)'; status(); }, 4000);
+});
+
+async function status() {
+  try {
+    const r = await fetch('/api/status');
+    if (r.status === 401) { location.href = '/'; return; }
+    const d = await r.json();
+    anqaDot.className = 'dot ' + (d.anqa ? 'online' : 'bad');
+    anqaState.textContent = d.anqa ? 'en ligne' : 'éteinte';
+    wol.hidden = !!d.anqa;
+    setMode(d.mode);
+    credit.innerHTML = (d.runpod || []).map(a => {
+      if (!a.ok || a.balance == null) return '<span class="chip">' + esc(a.label) + ' RunPod <b style="color:var(--ink-4)">n/a</b></span>';
+      const low = a.balance < 2;
+      const sp = a.spend_hr ? ' · ' + (+a.spend_hr).toFixed(2) + ' $/h' : '';
+      return '<span class="chip' + (low ? ' low' : '') + '">' + esc(a.label) + ' <b>$' + (+a.balance).toFixed(2) + '</b>' + sp + '</span>';
+    }).join('');
+  } catch (_) {}
+}
+status();
+setInterval(status, 20000);
+</script>
+</body>
+</html>
