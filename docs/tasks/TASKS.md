@@ -19,15 +19,17 @@
 - [x] DNS : wildcard `*.zitoon.com` déjà en place (rien à faire côté registrar)
 - [x] Dockerfile webservice + compose isolé + route Traefik → **déployé sur Fez ET Avignon** (2026-09-21)
 - [x] Validé bout-en-bout via `https://wifitest.zitoon.com` (submit → worker → found) (2026-09-21)
-- [ ] Valider sur un vrai GPU (Anqa quand up, ou RunPod) — fait sur iGPU Tulear pour l'instant
+- [x] Validé sur **vrai GPU Anqa (RTX 5070 Ti, CUDA 13.2)** via la prod → `found` (2026-09-22)
 
 **Prod déployée** : `https://wifitest.zitoon.com` (Fez actif + Avignon secours). Tokens dans
 `~/Wifitest/deploy/.env` sur chaque nœud (générés, hors git). MÀJ : `cd deploy && git pull && docker compose up -d --build`.
 
-### M1 — Capture RF  ⛔ BLOQUÉ (action matérielle requise)
-- [!] **Brancher l'USB-C propre de la dev board ESP32-S2 sur Bruxelles** (elle peut rester
-  montée sur le Flipper). Constaté 2026-09-21 : dev board seulement sur le GPIO du Flipper,
-  Flipper en firmware officiel sans app WiFi/Marauder → ESP32 non joignable, rien ne capture.
+### M1 — Capture RF  ⛔ BLOQUÉ (l'ESP32 n'énumère pas en USB)
+- [!] **2026-09-22 : USB-C de la dev board branché sur Bruxelles, mais l'ESP32-S2 n'énumère
+  PAS de port série/CDC.** Seul un hub USB `VID_1A86&PID_8091` apparaît, aucun VID Espressif
+  `303A`, `no ports found` (pyserial). Causes probables : câble USB-C **charge-seule**, ou
+  ESP à mettre en **mode download** (BOOT + RESET), ou branché via un hub. → à débloquer :
+  câble data + prise directe, sinon mode download. esptool a besoin d'un port pour flasher.
 - [ ] Après branchement : `esptool` détecte la puce → flasher firmware de capture (Marauder / WiFi Pen Tool)
 - [ ] Capturer PMKID/handshake du réseau **"visitor"** (perso, mdp connu) → pcap → `22000`
 - [ ] Repli handshake 4-way + deauth si pas de PMKID
@@ -38,7 +40,10 @@
 - [ ] Client webservice : soumettre / poll / afficher (LAN + 4G/5G)
 - [ ] Boucle complète capture → téléphone → Fez → Anqa → mot de passe
 
-### M3 — Backend RunPod + cascade
+### M3 — Backend GPU + cascade
+- [x] **Worker Anqa armé** : hashcat 6.2.6 (CUDA) dans `C:\Tools\wifitest\`, `worker.py`,
+  `visitor_wordlist.txt` (mdp connu), lanceur `run_worker.bat` (`-d 1` = RTX). Crack via
+  `run_worker.bat --once` (ou boucle sans arg). Validé sur la prod (2026-09-22).
 - [ ] `worker-runpod/` : template pod multi-4090 + wordlists sur network volume + self-terminate
 - [ ] Auto-spin sur Anqa down / tier lourd
 - [ ] Plan d'attaque en tiers (candidats FAI → rockyou+règles → masques)
