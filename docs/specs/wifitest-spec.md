@@ -74,6 +74,13 @@ port ouvert sur Anqa (marche derrière la box, aucune config réseau).
   sur **carte SD** (`/mnt/.../pcaps/`) ou streament en **UART vers le Flipper** — or la
   devboard **n'a pas de SD**. → Cette carte est conçue pour être pilotée **AVEC le Flipper**
   (SD + UI), pas en USB-CDC autonome. **Décision d'archi à revoir** (voir §11).
+- **⛔ Constat bloquant (2026-09-22) — l'ESP32-S2 est 2.4 GHz UNIQUEMENT.** Le réseau cible
+  **« visitor » est en 5 GHz** → **impossible à capturer avec cette carte** (ni voir, ni
+  handshake, ni PMKID en 5 GHz). Vérifié : Sniff EAPOL/Raw sur canaux 2.4 GHz → beacons
+  captés mais **0 trame EAPOL** (le handshake se joue en 5 GHz, invisible). Toute la chaîne
+  en aval (pull pcap via COM, conversion `hcxpcapngtool`→22000, crack Anqa) est **validée**.
+  **Pour le 5 GHz → carte dual-band Realtek RTL8720DN (BW16) + firmware 5Ghost** (projet
+  `pingequalab/5ghost-wifi-lab`, flash.pingequa.com). Le pipeline aval reste identique.
 
 ### 4.2 App Flipper (`flipper-app/`) — OPTIONNELLE, hors chemin critique
 Le Flipper n'est pas requis dans le flux de données (USB-CDC va de l'ESP32 au téléphone).

@@ -24,16 +24,17 @@
 **Prod déployée** : `https://wifitest.zitoon.com` (Fez actif + Avignon secours). Tokens dans
 `~/Wifitest/deploy/.env` sur chaque nœud (générés, hors git). MÀJ : `cd deploy && git pull && docker compose up -d --build`.
 
-### M1 — Capture RF  ⚠️ décision d'archi requise (voir spec §11)
-- [x] Dev board joignable en mode download (BOOT+RESET → COM4, VID 303A:0002). ESP32-S2 rev v0.0, flash 4 Mo.
-- [x] **ESP32 Marauder flashé** (option S2 devboard, EasyInstall.py) — Hash verified.
-- [!] **CONSTAT** : Marauder « flipper » ne sort PAS en USB (série sur UART→Flipper) ; Marauder
-  ET GhostESP écrivent le pcap sur **SD** ou UART→Flipper ; la devboard **n'a pas de SD**.
-  → l'archi USB-CDC headless ne colle pas à cette carte. **3 routes en spec §11** (A: via
-  Flipper ; B: firmware custom USB-CDC ; C: AP+WebUI). Décision utilisateur attendue.
-- [ ] Capturer PMKID/handshake du réseau **"visitor"** (perso, mdp connu) → pcap → `22000`
-- [ ] Repli handshake 4-way + deauth si pas de PMKID
-- Réseau de test fourni : SSID **visitor** (mdp connu pour valider la crack via wordlist)
+### M1 — Capture RF  ⛔ BLOQUÉ MATÉRIEL : cible 5 GHz, carte 2.4 GHz only
+- [x] ESP32-S2 identifié, **GhostESP flashé** (build esp32s2-generic), app Flipper Ghost ESP OK.
+- [x] Chaîne capture→crack **entièrement validée** côté outils : capture pcap sur SD Flipper,
+  pull via COM (script `pull4.py` avec drain du bandeau), transfert Avignon, conversion
+  `hcxpcapngtool`→22000, worker GPU Anqa prêt. (2026-09-22)
+- [x] Route A retenue (via Flipper + app GhostESP + SD). Routes B/C écartées (spec §11).
+- [!] **BLOCAGE** : « visitor » est en **5 GHz**, or ESP32-S2 = **2.4 GHz uniquement** →
+  captures 2.4 GHz = beacons mais **0 EAPOL** (handshake 5 GHz invisible). Constat définitif.
+- [ ] **Acquérir une carte dual-band RTL8720DN (BW16) + firmware 5Ghost** (pingequa) pour le 5 GHz.
+- [ ] Une fois la BW16 en place : capturer handshake/PMKID « visitor » (5 GHz) → 22000 → Anqa.
+- Astuce validation immédiate possible : capturer un handshake sur un SSID **2.4 GHz** perso.
 - [ ] Après branchement : `esptool` détecte la puce → flasher firmware de capture (Marauder / WiFi Pen Tool)
 - [ ] Capturer PMKID/handshake du réseau **"visitor"** (perso, mdp connu) → pcap → `22000`
 - [ ] Repli handshake 4-way + deauth si pas de PMKID
