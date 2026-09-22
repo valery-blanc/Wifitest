@@ -128,6 +128,14 @@ Le job manager lance **du plus probable au moins probable**, s'arrête au 1er hi
 2. **Tier lourd (RunPod pod multi-4090)** : gros dicos, règles étendues, masques ciblés —
    seulement si le tier rapide échoue **ou** si Anqa est indisponible.
 
+**Motifs « humains » à couvrir explicitement** (leçon du test radar, mdp `alexandrealexandre1`
+= prénom **doublé** + chiffre, ~20 bits d'entropie réelle malgré 19 caractères) :
+- **règles de duplication** : hashcat `d$1` sur `alexandre` → `alexandrealexandre1` ;
+- **attaque combinateur** `-a 1` (prénoms × prénoms) avec `-k '$1'`, ou hybride `-a 6/7` + masque `?d` ;
+- ⚠️ `rockyou × rockyou` complet = infaisable (2×10¹⁴) → **réduire** à une liste de prénoms.
+Une campagne générique (dico + règles single-word) **rate** ce motif ; une campagne
+consciente du motif le casse en heures sur un seul GPU. C'est le cœur du « levier stratégie ».
+
 ## 7. Sécurité du webservice public
 - HTTPS + **bearer token** (téléphone et workers, tokens distincts), pas d'endpoint anonyme.
 - Hash/résultats **supprimés après récupération** ou TTL court ; ne pas logger les secrets.

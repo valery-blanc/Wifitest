@@ -35,6 +35,15 @@
 - [ ] **Acquérir une carte dual-band RTL8720DN (BW16) + firmware 5Ghost** (pingequa) pour le 5 GHz.
 - [ ] Une fois la BW16 en place : capturer handshake/PMKID « visitor » (5 GHz) → 22000 → Anqa.
 - Astuce validation immédiate possible : capturer un handshake sur un SSID **2.4 GHz** perso.
+
+### ✅ VALIDATION BOUT-EN-BOUT réussie (2026-09-22) — réseau 2.4 GHz « radar »
+Handshake WPA2 de **radar** (2.4 GHz, canal 7) capté par le Flipper+GhostESP (Sniff Raw,
+**AP sélectionné pour verrouiller le canal** + reconnexions d'un client 2.4 GHz → M1/M3 captés),
+pull via COM (`pull4`/drain bandeau), conversion `hcxpcapngtool`→22000 sur Avignon, soumission
+au webservice prod → **cracké** : `alexandrealexandre1`. Vérifié sur **iGPU Tulear** ET sur
+**Anqa RTX 5070 Ti (CUDA)** via la prod. Toute l'archie (hors capture 5 GHz) est prouvée.
+Leçon capture : verrouiller le canal (sélectionner l'AP) est indispensable, sinon le sniffer
+hoppe et rate les trames de l'AP (M1/M3).
 - [ ] Après branchement : `esptool` détecte la puce → flasher firmware de capture (Marauder / WiFi Pen Tool)
 - [ ] Capturer PMKID/handshake du réseau **"visitor"** (perso, mdp connu) → pcap → `22000`
 - [ ] Repli handshake 4-way + deauth si pas de PMKID
