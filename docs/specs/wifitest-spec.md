@@ -1,6 +1,6 @@
 # WifiTest — Spécification (source de vérité)
 
-> **Version** : v0.4 (M0 déployé Fez+Avignon ; M1 diagnostiqué, 2026-09-21)
+> **Version** : v0.5 (M1 : Marauder flashé, contrainte matérielle USB/SD identifiée, 2026-09-22)
 > **Nature** : banc d'audit de robustesse de mot de passe WiFi (test de sécurité autorisé).
 > Ce fichier reflète à tout moment le comportement RÉEL du code. À mettre à jour à chaque
 > FEAT-XXX / BUG-XXX.
@@ -66,6 +66,14 @@ port ouvert sur Anqa (marche derrière la box, aucune config réseau).
   inconnu). ⚠️ **Pré-requis M1** : brancher l'USB-C **propre de la dev board** sur un PC
   (Bruxelles) pour flasher le firmware de capture (esptool) et parler à l'ESP32 en USB-CDC.
   Le montage sur le Flipper ne suffit pas — l'archi n'utilise pas le Flipper dans le flux.
+- **⚠️ Constat majeur (2026-09-22) — la devboard officielle résiste à l'USB-CDC headless.**
+  ESP32-S2 rev v0.0, flash 4 Mo, MAC `68:67:25:c0:38:a2`. Flashé **ESP32 Marauder** (option
+  S2 devboard) avec succès (Hash verified). **Mais** : (1) au boot, Marauder **n'expose
+  AUCUN port USB** (`no ports found`) — le build « flipper » route la série sur l'**UART
+  GPIO vers le Flipper**, pas sur l'USB natif ; (2) Marauder **et** GhostESP sauvent le pcap
+  sur **carte SD** (`/mnt/.../pcaps/`) ou streament en **UART vers le Flipper** — or la
+  devboard **n'a pas de SD**. → Cette carte est conçue pour être pilotée **AVEC le Flipper**
+  (SD + UI), pas en USB-CDC autonome. **Décision d'archi à revoir** (voir §11).
 
 ### 4.2 App Flipper (`flipper-app/`) — OPTIONNELLE, hors chemin critique
 Le Flipper n'est pas requis dans le flux de données (USB-CDC va de l'ESP32 au téléphone).
@@ -150,3 +158,21 @@ C:\WORK\WifiTest\
   → boucle complète capture → téléphone → Fez → Anqa → mot de passe.
 - **M3 — Backend RunPod + cascade** : worker pod multi-4090 (auto-spin), plan d'attaque en tiers.
 - **M4 — Finitions** : repli deauth, UI progression, durcissement sécurité, auto-suppression.
+
+## 11. Décision d'archi capture (ouverte depuis le constat du 2026-09-22)
+La devboard officielle ne convient pas à un pilotage USB-CDC headless (§4.1). Trois routes :
+
+- **Route A — Flipper + app Marauder/GhostESP (capture via le Flipper).** Le Flipper fournit
+  la SD (pcap) et l'UI. Installer la .fap, lancer une capture PMKID/handshake (boutons),
+  récupérer le pcap depuis la SD du Flipper via CLI → convertir en 22000 → cracker.
+  ✅ marche avec le matériel tel quel. ❌ étape de capture pilotée aux boutons (peu automatisable).
+- **Route B — firmware ESP32-S2 custom USB-CDC (cible « produit »).** Firmware minimal qui
+  sniffe PMKID/EAPOL et **imprime la ligne 22000 sur l'USB natif** → colle à l'archi
+  téléphone↔USB-CDC. ❌ tâche de dev firmware (toolchain ESP-IDF/Arduino, compilation, itération).
+- **Route C — GhostESP/WiFi-Pen-Tool en mode AP + WebUI.** L'ESP monte son propre AP ; on
+  pilote la capture et on télécharge le pcap en HTTP (sans Flipper, sans SD selon le firmware).
+  Le téléphone rejoint l'AP de l'ESP. Compromis ; à valider selon le firmware.
+
+Recommandation : **Route A pour prouver la chaîne capture→crack tout de suite** (matériel en
+l'état), **Route B pour la version produit** (pilotage téléphone/USB). État actuel : la
+devboard a **Marauder** flashé.

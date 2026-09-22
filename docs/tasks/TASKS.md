@@ -24,12 +24,16 @@
 **Prod déployée** : `https://wifitest.zitoon.com` (Fez actif + Avignon secours). Tokens dans
 `~/Wifitest/deploy/.env` sur chaque nœud (générés, hors git). MÀJ : `cd deploy && git pull && docker compose up -d --build`.
 
-### M1 — Capture RF  ⛔ BLOQUÉ (l'ESP32 n'énumère pas en USB)
-- [!] **2026-09-22 : USB-C de la dev board branché sur Bruxelles, mais l'ESP32-S2 n'énumère
-  PAS de port série/CDC.** Seul un hub USB `VID_1A86&PID_8091` apparaît, aucun VID Espressif
-  `303A`, `no ports found` (pyserial). Causes probables : câble USB-C **charge-seule**, ou
-  ESP à mettre en **mode download** (BOOT + RESET), ou branché via un hub. → à débloquer :
-  câble data + prise directe, sinon mode download. esptool a besoin d'un port pour flasher.
+### M1 — Capture RF  ⚠️ décision d'archi requise (voir spec §11)
+- [x] Dev board joignable en mode download (BOOT+RESET → COM4, VID 303A:0002). ESP32-S2 rev v0.0, flash 4 Mo.
+- [x] **ESP32 Marauder flashé** (option S2 devboard, EasyInstall.py) — Hash verified.
+- [!] **CONSTAT** : Marauder « flipper » ne sort PAS en USB (série sur UART→Flipper) ; Marauder
+  ET GhostESP écrivent le pcap sur **SD** ou UART→Flipper ; la devboard **n'a pas de SD**.
+  → l'archi USB-CDC headless ne colle pas à cette carte. **3 routes en spec §11** (A: via
+  Flipper ; B: firmware custom USB-CDC ; C: AP+WebUI). Décision utilisateur attendue.
+- [ ] Capturer PMKID/handshake du réseau **"visitor"** (perso, mdp connu) → pcap → `22000`
+- [ ] Repli handshake 4-way + deauth si pas de PMKID
+- Réseau de test fourni : SSID **visitor** (mdp connu pour valider la crack via wordlist)
 - [ ] Après branchement : `esptool` détecte la puce → flasher firmware de capture (Marauder / WiFi Pen Tool)
 - [ ] Capturer PMKID/handshake du réseau **"visitor"** (perso, mdp connu) → pcap → `22000`
 - [ ] Repli handshake 4-way + deauth si pas de PMKID
