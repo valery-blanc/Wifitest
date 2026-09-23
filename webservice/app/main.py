@@ -19,7 +19,7 @@ import time
 import urllib.request
 import uuid
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
@@ -155,9 +155,18 @@ def logout():
     return resp
 
 
+def _budget_seconds(budget_min: int | None) -> int | None:
+    """Convertit un budget en minutes (input UI) en secondes, borné 1 min .. 12 h."""
+    if not budget_min:
+        return None
+    return max(60, min(int(budget_min), 720) * 60)
+
+
 @app.post("/api/upload")
-async def upload(request: Request, file: UploadFile = File(...)):
+async def upload(request: Request, file: UploadFile = File(...),
+                 budget_min: int | None = Form(None)):
     require_session(request)
+    budget = _budget_seconds(budget_min)
     data = await file.read()
     if len(data) > MAX_UPLOAD:
         raise HTTPException(413, f"Fichier trop gros (max {MAX_UPLOAD // (1024*1024)} Mo)")
@@ -206,7 +215,8 @@ async def upload(request: Request, file: UploadFile = File(...)):
                 ssid = bytes.fromhex(parts[5]).decode("utf-8", errors="replace")
             except ValueError:
                 ssid = parts[5]
-        jid = db.create_job(line, ssid or None, None, None, pcap=pcap_name)
+        jid = db.create_job(line, ssid or None, None, None, pcap=pcap_name,
+                            max_runtime=budget)
         created.append({"job_id": jid, "ssid": ssid})
     return {"created": created, "message": f"{len(created)} réseau(x) → mis en file pour crack."}
 
@@ -220,9 +230,10 @@ def api_jobs(request: Request):
             "job_id": j["id"], "ssid": j["ssid"], "status": j["status"],
             "password": j["password"], "error": j["error"],
             "progress": j["progress"], "created_at": j["created_at"],
-            "worker_id": j["worker_id"],
+            "worker_id": j["worker_id"], "started_at": j["started_at"],
+            "phase": j["phase"], "max_runtime": j["max_runtime"],
         })
-    return {"jobs": out}
+    return {"jobs": out, "now": time.time()}
 
 
 @app.post("/api/jobs/{job_id}/stop")
@@ -246,6 +257,20 @@ def api_delete(request: Request, job_id: str):
             os.remove(os.path.join(PCAP_DIR, os.path.basename(pcap)))
         except OSError:
             pass
+    return {"ok": True}
+
+
+class RerunReq(BaseModel):
+    budget_min: int | None = None
+
+
+@app.post("/api/jobs/{job_id}/rerun")
+def api_rerun(request: Request, job_id: str, r: RerunReq | None = None):
+    """Bouton Play : relance un crack terminé (stopped/not_found/error/found)."""
+    require_session(request)
+    budget = _budget_seconds(r.budget_min if r else None)
+    if not db.requeue_job(job_id, budget):
+        raise HTTPException(409, "Job introuvable ou déjà en file/en cours")
     return {"ok": True}
 
 
@@ -452,11 +477,13 @@ class CreateJob(BaseModel):
     ssid: str | None = None
     bssid: str | None = None
     attack_plan: dict | None = None
+    max_runtime: int | None = None
 
 
 class Progress(BaseModel):
     progress: float = 0
     tried: int = 0
+    phase: str | None = None
 
 
 class Result(BaseModel):
@@ -474,7 +501,8 @@ def health() -> dict:
 def submit_job(req: CreateJob) -> dict:
     if not req.hash_22000.startswith("WPA*"):
         raise HTTPException(422, "hash_22000 doit être une ligne mode 22000 (WPA*...)")
-    job_id = db.create_job(req.hash_22000.strip(), req.ssid, req.bssid, req.attack_plan)
+    job_id = db.create_job(req.hash_22000.strip(), req.ssid, req.bssid, req.attack_plan,
+                           max_runtime=req.max_runtime)
     return {"job_id": job_id}
 
 
@@ -487,6 +515,7 @@ def claim_job(worker_id: str = "worker") -> dict:
     return {"job": {
         "job_id": job["id"], "hash_22000": job["hash_22000"], "ssid": job["ssid"],
         "bssid": job["bssid"], "attack_plan": job["attack_plan"],
+        "max_runtime": job.get("max_runtime"),
     }}
 
 
@@ -502,7 +531,7 @@ def job_status(job_id: str) -> dict:
 
 @app.post("/jobs/{job_id}/progress", dependencies=[Depends(worker_auth)])
 def post_progress(job_id: str, p: Progress) -> dict:
-    if not db.update_progress(job_id, p.progress, p.tried):
+    if not db.update_progress(job_id, p.progress, p.tried, p.phase):
         raise HTTPException(404, "Unknown or non-running job")
     return {"ok": True}
 

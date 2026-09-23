@@ -221,3 +221,30 @@ td.c-act { white-space: nowrap; }
 .credit { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .credit .chip b { color: var(--success); }
 .credit .chip.low b { color: var(--warn); }
+
+/* --- FEAT-003 : input budget, barre de progression, bouton Play ---------- */
+.ico.play:hover { color: var(--success); border-color: rgba(74,222,128,0.4); }
+.budget-ctl { display: flex; align-items: center; gap: 8px; }
+.budget-ctl input {
+  width: 68px; padding: 7px 10px; border-radius: 8px; background: var(--bg-3);
+  border: 1px solid var(--border-hi); color: var(--ink); font-family: var(--mono);
+  font-size: 0.85rem; text-align: right;
+}
+.budget-ctl input:focus { outline: none; border-color: var(--accent); }
+
+.prog { margin-top: 8px; min-width: 150px; }
+.prog-track {
+  height: 5px; border-radius: 999px; background: var(--bg-3);
+  border: 1px solid var(--border); overflow: hidden;
+}
+.prog-fill {
+  height: 100%; width: 0; border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hi));
+  transition: width 1s linear;
+}
+.prog-meta {
+  display: flex; justify-content: space-between; gap: 10px; margin-top: 5px;
+  font-family: var(--mono); font-size: 0.62rem; letter-spacing: 0.04em; color: var(--ink-4);
+}
+.prog-phase { color: var(--ink-3); text-transform: none; letter-spacing: 0; }
+.prog-elapsed { white-space: nowrap; }

@@ -46,6 +46,11 @@
         <button class="tab" data-m="auto">Pod si Anqa down</button>
       </div>
     </div>
+    <div class="budget-ctl">
+      <span class="mono">Budget max</span>
+      <input type="number" id="budget" min="1" max="720" step="1" value="60">
+      <span class="mono">min</span>
+    </div>
     <div class="credit" id="credit"></div>
   </div>
 
@@ -118,6 +123,7 @@ send.addEventListener('click', async () => {
   msg.textContent = 'Extraction du hash…';
   const fd = new FormData();
   fd.append('file', chosen);
+  fd.append('budget_min', String(budgetMin()));
   try {
     const r = await fetch('/api/upload', { method: 'POST', body: fd });
     if (r.status === 401) { location.href = '/'; return; }
@@ -141,6 +147,22 @@ function dt(ts) {
   return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate())
     + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
 }
+
+function budgetMin() {
+  const v = parseInt(document.getElementById('budget').value, 10);
+  return (isNaN(v) || v < 1) ? 60 : Math.min(v, 720);
+}
+
+function fmtDur(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const p = (n) => String(n).padStart(2, '0');
+  return (h ? h + ':' + p(m) : m) + ':' + p(s);
+}
+
+// Décalage horloge serveur↔client (le serveur envoie `now` à chaque /api/jobs).
+let clockSkew = 0;
+const nowSrv = () => Date.now() / 1000 + clockSkew;
 
 const STATES = {
   queued:   { c: '',         t: 'en file' },
@@ -176,12 +198,26 @@ function pwCell(j) {
   return '<span class="pending"><span class="spinner"></span> en cours…</span>';
 }
 
+function progHtml(j) {
+  // Barre + passe en cours + durée écoulée (mise à jour chaque seconde par le ticker).
+  const budget = j.max_runtime || 0;
+  return '<div class="prog" data-started="' + (j.started_at || 0) + '" data-budget="'
+    + budget + '" data-progress="' + (j.progress || 0) + '">'
+    + '<div class="prog-track"><div class="prog-fill"></div></div>'
+    + '<div class="prog-meta"><span class="prog-phase">' + (esc(j.phase) || 'démarrage…')
+    + '</span><span class="prog-elapsed"></span></div>'
+    + '</div>';
+}
+
 function rowHtml(j) {
   const st = STATES[j.status] || STATES.queued;
   let status = '<span class="badge ' + st.c + '">' + st.t + '</span>';
+  if (j.status === 'running') status += progHtml(j);
   if (j.status === 'error' && j.error) status += '<div class="err">' + esc(j.error) + '</div>';
   const canStop = (j.status === 'queued' || j.status === 'running');
+  const canPlay = (j.status === 'stopped' || j.status === 'not_found' || j.status === 'error');
   const actions = '<div class="row-actions">'
+    + (canPlay ? '<button class="ico play" data-id="' + j.job_id + '" title="Relancer ce crack">&#9654;</button>' : '')
     + (canStop ? '<button class="ico stop" data-id="' + j.job_id + '" title="Arrêter le crack">&#9632;</button>' : '')
     + '<button class="ico trash" data-id="' + j.job_id + '" title="Supprimer le crack et le pcap">&#128465;</button>'
     + '</div>';
@@ -217,9 +253,19 @@ document.getElementById('tbody').addEventListener('click', (e) => {
 
 // Boutons Stop (arrêter un crack) et Poubelle (supprimer job + pcap).
 document.getElementById('tbody').addEventListener('click', async (e) => {
+  const playB = e.target.closest('.ico.play');
   const stopB = e.target.closest('.ico.stop');
   const trashB = e.target.closest('.ico.trash');
-  if (stopB) {
+  if (playB) {
+    playB.disabled = true;
+    try {
+      await fetch('/api/jobs/' + encodeURIComponent(playB.dataset.id) + '/rerun', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ budget_min: budgetMin() }),
+      });
+    } catch (_) {}
+    refresh();
+  } else if (stopB) {
     stopB.disabled = true;
     try { await fetch('/api/jobs/' + encodeURIComponent(stopB.dataset.id) + '/stop', { method: 'POST' }); } catch (_) {}
     refresh();
@@ -236,13 +282,37 @@ async function refresh() {
     const r = await fetch('/api/jobs');
     if (r.status === 401) { location.href = '/'; return; }
     const d = await r.json();
+    if (d.now) clockSkew = d.now - Date.now() / 1000;
     jobs = d.jobs || [];
     render();
+    tick();
   } catch (_) { /* réseau : on retentera */ }
+}
+
+// Met à jour chaque seconde la barre + la durée écoulée des jobs en cours (sans re-render).
+function tick() {
+  document.querySelectorAll('.prog').forEach(p => {
+    const started = +p.dataset.started, budget = +p.dataset.budget;
+    const fill = p.querySelector('.prog-fill');
+    const el = p.querySelector('.prog-elapsed');
+    if (started > 0) {
+      const elapsed = nowSrv() - started;
+      if (budget > 0) {
+        fill.style.width = Math.min(100, elapsed / budget * 100) + '%';
+        el.textContent = fmtDur(elapsed) + ' / ' + Math.round(budget / 60) + ' min';
+      } else {
+        fill.style.width = (+p.dataset.progress || 0) + '%';
+        el.textContent = fmtDur(elapsed);
+      }
+    } else {
+      fill.style.width = (+p.dataset.progress || 0) + '%';
+    }
+  });
 }
 
 refresh();
 setInterval(refresh, 5000);
+setInterval(tick, 1000);
 
 // --- statut infra : Anqa (WOL) / RunPod (crédit) / mode ---
 const anqaDot = document.getElementById('anqa-dot');

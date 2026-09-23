@@ -97,3 +97,21 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] **Arrêt d'un crack en cours validé en réel** sur GPU Anqa (RTX 5070 Ti) : job long (rockyou×best64) `running` → `POST /api/jobs/{id}/stop` → `action:"canceling"` → worker tue hashcat → `stopped` en ~4 s.
 - [x] Aussi validés en réel : stop en file (queued→stopped), poubelle (job + pcap effacé), crack normal (radar → `found`).
 - [x] **Worker Anqa persistant** : tâche planifiée `WifiTestWorker` (ONLOGON, session interactive Val, run_worker.bat) créée + démarrée + validée (crack GPU OK). Helper `C:\Tools\wifitest\stop_worker.ps1` pour arrêter le worker.
+
+#### FEAT-002 — crack en cascade borné (2026-09-23)
+- [x] `worker/worker.py` : `crack()` réécrit en cascade (visitor → rockyou → +best64 → masque 8 → +2 chiffres → +OneRule → masque 10), budget `WIFITEST_MAX_RUNTIME` (défaut 1 h), `--runtime` par passe, progression postée (~30 s, anti-stale), interruptible (Stop).
+- [x] Copie `webservice/app/static/worker.py` (pod).
+- [x] Anqa : OneRuleToRuleThemAll.rule téléchargé (`C:\Tools\wifitest\`), best64 présent (livré hashcat), rockyou présent ; `run_worker.bat` = WORDLIST(visitor)+ROCKYOU+MAX_RUNTIME=3600 ; tâche `WifiTestWorker` relancée.
+- [x] Testé (budget 90 s) : cascade enchaîne rockyou → rockyou+best64 → budget épuisé → not_found (budget respecté).
+- [ ] À confirmer par Val : re-tester le fichier qui donnait not_found → doit tourner plus longtemps / trouver plus.
+- [ ] Pod RunPod : `bootstrap.sh` devra fournir rockyou + rules + budget (quand le pod sera validé).
+
+#### FEAT-003 — suivi d'avancement + Play + budget + worker sans fenêtre (2026-09-23)
+- [x] DB : colonnes `phase`, `max_runtime` (migrations idempotentes) ; `create_job(max_runtime)`, `update_progress(phase)`, `requeue_job()`.
+- [x] main.py : `/api/jobs` renvoie `started_at`/`phase`/`max_runtime`/`now` ; `/jobs/next` renvoie `max_runtime` ; `/jobs/{id}/progress` accepte `phase` ; `/api/upload` accepte `budget_min` ; **`POST /api/jobs/{id}/rerun`** (Play).
+- [x] worker.py : budget lu depuis le job (sinon env), passe (`phase`) postée à chaque étape.
+- [x] UI : input **Budget (min)** ; **barre de progression** + passe en cours + durée écoulée (ticker 1 s, horloge serveur) ; bouton **▶ Play** (relance stopped/not_found/error).
+- [x] Déployé Fez+Avignon **sans interrompre le scan en cours** (hashcat continue ; job Sunrise resté `running`). Endpoints validés (rerun→409 sur running, app.html sert les éléments).
+- [x] Anqa : worker.py **stagé** (actif au prochain redémarrage du worker) ; `run_worker.bat` logue dans `worker.log` ; tâche `WifiTestWorker` relancée via **VBS caché** (`launch_hidden.vbs`) → plus de fenêtre au prochain lancement.
+- [ ] **À activer après la fin du scan** : redémarrer le worker Anqa pour charger le nouveau worker.py → passe affichée + budget par job honorés (l'ancien process en mémoire ignore encore ces deux points).
+- [ ] Validation Val : barre/passe/durée, Play, budget en minutes.

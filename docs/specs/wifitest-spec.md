@@ -1,7 +1,8 @@
 # WifiTest — Spécification (source de vérité)
 
-> **Version** : v0.6 (FEAT-001 : UI pcap.zitoon.com upload→crack, boutons Stop/Poubelle
-> validés en réel sur GPU Anqa, worker Anqa persistant en tâche planifiée, 2026-09-23)
+> **Version** : v0.7 (FEAT-002 : crack en cascade borné dans le temps ; FEAT-003 : suivi
+> d'avancement + barre, bouton Play, budget par job, worker Anqa sans fenêtre. 2026-09-23)
+> v0.6 : FEAT-001 UI pcap.zitoon.com upload→crack, Stop/Poubelle, worker Anqa persistant.
 > **Nature** : banc d'audit de robustesse de mot de passe WiFi (test de sécurité autorisé).
 > Ce fichier reflète à tout moment le comportement RÉEL du code. À mettre à jour à chaque
 > FEAT-XXX / BUG-XXX.
@@ -142,12 +143,27 @@ anti-bruteforce par IP) :
 - `POST /api/jobs/{id}/stop` (**bouton Stop**) : `queued → stopped` direct ; `running →`
   flag `cancel=1` (le worker interrompt hashcat et poste `stopped`). Réponses :
   `action: stopped | canceling | noop`.
+- `POST /api/jobs/{id}/rerun` (**bouton Play**, FEAT-003) : relance un job terminé
+  (`stopped|not_found|error|found`) → `queued` (reset état d'exécution), `budget_min` optionnel.
 - `DELETE /api/jobs/{id}` (**bouton Poubelle**) : supprime le job **et** le pcap associé
   si plus aucun job ne le référence (`count_pcap_refs == 0`).
+- **Suivi (FEAT-003)** : `GET /api/jobs` renvoie `started_at`, `phase` (passe en cours),
+  `max_runtime` (budget) et `now` (horloge serveur) → l'UI affiche barre + passe + durée
+  écoulée. `POST /api/upload` accepte `budget_min` (input minutes). Le worker poste `phase`
+  via `/jobs/{id}/progress` et lit le budget par job renvoyé par `/jobs/next`.
 - `GET /api/status` (Anqa joignable + mode + crédit RunPod), `POST /api/anqa/wake` (WOL via
   gqqfm-power), `POST /api/mode` (pod seul / anqa seul / pod si anqa down).
 
 ## 6. Stratégie de cracking en cascade (le vrai levier)
+
+> **Implémenté (FEAT-002, 2026-09-23)** dans `worker/worker.py` : le worker exécute une
+> cascade d'attaques hashcat bornée par un budget temps (`WIFITEST_MAX_RUNTIME`, défaut 1 h),
+> arrêt au 1er hit, chaque passe recevant `--runtime = temps restant`. Ordre par défaut :
+> (1) wordlist ciblée → (2) rockyou → (3) rockyou+best64 → (4) masque 8 chiffres →
+> (5) rockyou+suffixe 2 chiffres → (6) rockyou+OneRuleToRuleThemAll → (7) masque 10 chiffres.
+> Ressource absente = passe sautée. Interruptible (Stop) + progression postée (~30 s).
+> Détails : `docs/specs/FEAT-002-crack-cascade.md`.
+
 Le job manager lance **du plus probable au moins probable**, s'arrête au 1er hit :
 1. **Tier rapide (Anqa, gratuit)** : candidats ciblés = mots de passe **par défaut FAI**
    déduits du SSID (Livebox/SFR/Orange, formats hex/majuscules, numéros, dates) → puis

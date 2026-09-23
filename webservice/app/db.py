@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     error       TEXT,
     cancel      INTEGER DEFAULT 0,   -- demande d'annulation (le worker interrompt hashcat)
     pcap        TEXT,                -- nom du fichier pcap source (dans /data/pcaps)
+    phase       TEXT,                -- passe de la cascade en cours (ex. "rockyou+best64 (3/7)")
+    max_runtime INTEGER,             -- budget temps en secondes (None = défaut du worker)
     created_at  REAL NOT NULL,
     started_at  REAL,
     updated_at  REAL NOT NULL
@@ -51,7 +53,8 @@ def init_db() -> None:
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.executescript(_SCHEMA)
         # migrations idempotentes (bases existantes)
-        for col, ddl in (("cancel", "INTEGER DEFAULT 0"), ("pcap", "TEXT")):
+        for col, ddl in (("cancel", "INTEGER DEFAULT 0"), ("pcap", "TEXT"),
+                         ("phase", "TEXT"), ("max_runtime", "INTEGER")):
             try:
                 _conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
             except sqlite3.OperationalError:
@@ -66,15 +69,16 @@ def _row_to_job(row: sqlite3.Row) -> dict:
 
 
 def create_job(hash_22000: str, ssid: str | None, bssid: str | None,
-               attack_plan: dict | None, pcap: str | None = None) -> str:
+               attack_plan: dict | None, pcap: str | None = None,
+               max_runtime: int | None = None) -> str:
     job_id = uuid.uuid4().hex
     now = time.time()
     with _lock:
         _conn.execute(
             "INSERT INTO jobs (id, hash_22000, ssid, bssid, attack_plan, status,"
-            " pcap, created_at, updated_at) VALUES (?,?,?,?,?, 'queued', ?, ?, ?)",
+            " pcap, max_runtime, created_at, updated_at) VALUES (?,?,?,?,?, 'queued', ?, ?, ?, ?)",
             (job_id, hash_22000, ssid, bssid,
-             json.dumps(attack_plan) if attack_plan else None, pcap, now, now),
+             json.dumps(attack_plan) if attack_plan else None, pcap, max_runtime, now, now),
         )
         _conn.commit()
     return job_id
@@ -124,13 +128,14 @@ def claim_next_job(worker_id: str) -> dict | None:
     return _row_to_job(row)
 
 
-def update_progress(job_id: str, progress: float, tried: int) -> bool:
+def update_progress(job_id: str, progress: float, tried: int,
+                    phase: str | None = None) -> bool:
     now = time.time()
     with _lock:
         cur = _conn.execute(
-            "UPDATE jobs SET progress=?, tried=?, updated_at=?"
+            "UPDATE jobs SET progress=?, tried=?, phase=COALESCE(?, phase), updated_at=?"
             " WHERE id=? AND status='running'",
-            (progress, tried, now, job_id),
+            (progress, tried, phase, now, job_id),
         )
         _conn.commit()
         return cur.rowcount > 0
@@ -192,3 +197,23 @@ def count_pcap_refs(pcap: str) -> int:
     with _lock:
         row = _conn.execute("SELECT COUNT(*) FROM jobs WHERE pcap=?", (pcap,)).fetchone()
     return int(row[0] if row else 0)
+
+
+def requeue_job(job_id: str, max_runtime: int | None = None) -> bool:
+    """Relance (bouton Play) un job terminé : le repasse en 'queued' et réinitialise l'état
+    d'exécution, en gardant hash/ssid/pcap. `max_runtime` non nul écrase le budget.
+    Sans effet sur un job déjà queued/running. Retourne True si relancé."""
+    now = time.time()
+    with _lock:
+        row = _conn.execute("SELECT status, max_runtime FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None or row["status"] in ("queued", "running"):
+            return False
+        budget = max_runtime if max_runtime else row["max_runtime"]
+        _conn.execute(
+            "UPDATE jobs SET status='queued', worker_id=NULL, started_at=NULL, cancel=0,"
+            " password=NULL, error=NULL, progress=0, tried=0, phase=NULL,"
+            " max_runtime=?, updated_at=? WHERE id=?",
+            (budget, now, job_id),
+        )
+        _conn.commit()
+    return True
