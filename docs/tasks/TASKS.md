@@ -104,6 +104,7 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [!] **Pod ne cracke pas encore** : au 1er test l'image `dizcza/docker-hashcat` avait un ENTRYPOINT (dockerArgs ignoré) ; passé à `nvidia/cuda:...` mais le worker n'a pas tourné (image de base **sans curl** → le fetch du bootstrap échouait). **Fix appliqué** (dockerArgs installe curl avant de fetch) — **à VALIDER demain** avec logs du pod en direct.
 - [x] **Dispatcher DÉSACTIVÉ pour la nuit** (`WIFITEST_DISPATCHER=0` sur Fez, mode=anqa) → aucun pod ne spinnera. Réactiver : `WIFITEST_DISPATCHER=1` + restart.
 - [ ] Demain : réactiver dispatcher, lancer 1 pod, tirer ses logs (RunPod), corriger le bootstrap si besoin → 1er crack via pod. ~~Worker Anqa permanent (tâche planifiée)~~ ✅ **FAIT (23/09)**.
+- [ ] **Divergence nœuds (§8, constat 23/09, non bloquant)** : Avignon `deploy/.env` n'a pas `WIFITEST_DISPATCHER`/`MAX_POD_LIFE`/`POD_IMAGE` (présents sur Fez). Sans effet aujourd'hui (`DISPATCHER_ON` défaut = OFF ; secrets partagés OK). **À la finalisation du pod** : mettre ces réglages *pod* dans le **compose versionné** (pas en `.env` local) pour survivre à la bascule Fez→Avignon.
 
 #### FEAT-001 — boutons Stop + Poubelle (2026-09-23)
 - [x] DB : colonnes `cancel` + `pcap` (migration idempotente) ; request_cancel / is_canceled / delete_job / count_pcap_refs.
