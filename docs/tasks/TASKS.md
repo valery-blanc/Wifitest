@@ -85,3 +85,12 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [!] **Pod ne cracke pas encore** : au 1er test l'image `dizcza/docker-hashcat` avait un ENTRYPOINT (dockerArgs ignoré) ; passé à `nvidia/cuda:...` mais le worker n'a pas tourné (image de base **sans curl** → le fetch du bootstrap échouait). **Fix appliqué** (dockerArgs installe curl avant de fetch) — **à VALIDER demain** avec logs du pod en direct.
 - [x] **Dispatcher DÉSACTIVÉ pour la nuit** (`WIFITEST_DISPATCHER=0` sur Fez, mode=anqa) → aucun pod ne spinnera. Réactiver : `WIFITEST_DISPATCHER=1` + restart.
 - [ ] Demain : réactiver dispatcher, lancer 1 pod, tirer ses logs (RunPod), corriger le bootstrap si besoin → 1er crack via pod. Worker Anqa permanent (tâche planifiée) une fois Anqa réveillée (WOL/8h).
+
+#### FEAT-001 — boutons Stop + Poubelle (2026-09-23)
+- [x] DB : colonnes `cancel` + `pcap` (migration idempotente) ; request_cancel / is_canceled / delete_job / count_pcap_refs.
+- [x] Upload : le pcap source est stocké dans `/data/pcaps/<id>.pcap` (référencé par les jobs).
+- [x] Endpoints : `POST /api/jobs/{id}/stop` (queued→stopped, running→cancel), `DELETE /api/jobs/{id}` (job + pcap si plus référencé), `GET /jobs/{id}/cancel` (worker).
+- [x] Worker : hashcat lancé en Popen + sondage annulation toutes les 3 s → kill → statut `stopped`.
+- [x] UI : colonne Actions (■ Stop pour queued/running, 🗑 Poubelle avec confirmation) ; état « arrêté » ; tableau toujours triable/copiable.
+- [x] Déployé Fez+Avignon, **testé** : stop (queued→stopped) + trash (job + pcap effacé) OK.
+- [ ] À finir : recopier `worker.py` à jour sur Anqa (injoignable ce soir) ; valider l'arrêt d'un crack *en cours* sur un vrai job long.

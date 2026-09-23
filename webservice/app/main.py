@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import uuid
 
 from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -182,11 +183,22 @@ async def upload(request: Request, file: UploadFile = File(...)):
                 lines = [ln.strip() for ln in f if ln.strip().startswith("WPA*")]
 
     seen: set[str] = set()
+    uniq = [ln for ln in lines if not (ln in seen or seen.add(ln))]
+    if not uniq:
+        return JSONResponse({"created": [], "message":
+            "Aucun hash exploitable dans ce pcap (pas de handshake complet M1/M2 ni de PMKID)."})
+
+    # sauvegarder le pcap source pour pouvoir le supprimer via la poubelle
+    os.makedirs(PCAP_DIR, exist_ok=True)
+    pcap_name: str | None = uuid.uuid4().hex + ".pcap"
+    try:
+        with open(os.path.join(PCAP_DIR, pcap_name), "wb") as f:
+            f.write(data)
+    except Exception:
+        pcap_name = None
+
     created = []
-    for line in lines:
-        if line in seen:
-            continue
-        seen.add(line)
+    for line in uniq:
         parts = line.split("*")
         ssid = ""
         if len(parts) > 5:
@@ -194,12 +206,8 @@ async def upload(request: Request, file: UploadFile = File(...)):
                 ssid = bytes.fromhex(parts[5]).decode("utf-8", errors="replace")
             except ValueError:
                 ssid = parts[5]
-        jid = db.create_job(line, ssid or None, None, None)
+        jid = db.create_job(line, ssid or None, None, None, pcap=pcap_name)
         created.append({"job_id": jid, "ssid": ssid})
-
-    if not created:
-        return JSONResponse({"created": [], "message":
-            "Aucun hash exploitable dans ce pcap (pas de handshake complet M1/M2 ni de PMKID)."})
     return {"created": created, "message": f"{len(created)} réseau(x) → mis en file pour crack."}
 
 
@@ -217,12 +225,37 @@ def api_jobs(request: Request):
     return {"jobs": out}
 
 
+@app.post("/api/jobs/{job_id}/stop")
+def api_stop(request: Request, job_id: str):
+    require_session(request)
+    action = db.request_cancel(job_id)
+    if action is None:
+        raise HTTPException(404, "Unknown job")
+    return {"ok": True, "action": action}
+
+
+@app.delete("/api/jobs/{job_id}")
+def api_delete(request: Request, job_id: str):
+    require_session(request)
+    job = db.delete_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Unknown job")
+    pcap = job.get("pcap")
+    if pcap and db.count_pcap_refs(pcap) == 0:
+        try:
+            os.remove(os.path.join(PCAP_DIR, os.path.basename(pcap)))
+        except OSError:
+            pass
+    return {"ok": True}
+
+
 # ---- infra : Anqa (WOL) / RunPod (crédit) / mode de dispatch ---------------
 
 POWER_URL = os.environ.get("WIFITEST_POWER_URL", "http://192.168.0.250:8533").rstrip("/")
 POWER_TOKEN = os.environ.get("POWER_TOKEN", "")
 ANQA_ENDPOINTS = [("192.168.0.133", 22), ("192.168.0.112", 22)]
 SETTINGS_FILE = os.environ.get("WIFITEST_SETTINGS", "/data/settings.json")
+PCAP_DIR = os.environ.get("WIFITEST_PCAP_DIR", "/data/pcaps")
 DEFAULT_MODE = "auto"  # anqa | pod | auto (pod si Anqa indisponible)
 
 
@@ -476,8 +509,13 @@ def post_progress(job_id: str, p: Progress) -> dict:
 
 @app.post("/jobs/{job_id}/result", dependencies=[Depends(worker_auth)])
 def post_result(job_id: str, r: Result) -> dict:
-    if r.status not in ("found", "not_found", "error"):
+    if r.status not in ("found", "not_found", "error", "stopped"):
         raise HTTPException(422, "status invalide")
     if not db.finish_job(job_id, r.status, r.password, r.error):
         raise HTTPException(404, "Unknown job")
     return {"ok": True}
+
+
+@app.get("/jobs/{job_id}/cancel", dependencies=[Depends(worker_auth)])
+def job_cancel(job_id: str) -> dict:
+    return {"cancel": db.is_canceled(job_id)}

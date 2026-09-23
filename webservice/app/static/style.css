@@ -201,6 +201,14 @@ td.c-status .err { color: var(--danger); font-size: 0.74rem; margin-top: 5px; wo
 table.jobs th.sort { cursor: pointer; user-select: none; -webkit-user-select: none; }
 table.jobs th.sort:hover { color: var(--ink-2); }
 table.jobs th .arr { color: var(--accent); margin-left: 5px; font-size: 0.7rem; }
+.badge.stopped { color: var(--ink-4); border-color: var(--border-hi); }
+td.c-act { white-space: nowrap; }
+.row-actions { display: flex; gap: 6px; }
+.ico { background: var(--surface); border: 1px solid var(--border-hi); color: var(--ink-3); border-radius: 8px; padding: 5px 9px; font-size: 0.9rem; line-height: 1; }
+.ico:hover { background: var(--surface-hi); color: var(--ink); }
+.ico.stop:hover { color: var(--warn); border-color: rgba(251,191,36,0.4); }
+.ico.trash:hover { color: var(--danger); border-color: rgba(248,113,113,0.4); }
+.ico:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* --- bandeau de contrôle (mode + crédit RunPod) -------------------------- */
 .controls { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; margin-bottom: 22px; }

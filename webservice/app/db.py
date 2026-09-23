@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     tried       INTEGER DEFAULT 0,
     password    TEXT,
     error       TEXT,
+    cancel      INTEGER DEFAULT 0,   -- demande d'annulation (le worker interrompt hashcat)
+    pcap        TEXT,                -- nom du fichier pcap source (dans /data/pcaps)
     created_at  REAL NOT NULL,
     started_at  REAL,
     updated_at  REAL NOT NULL
@@ -48,6 +50,12 @@ def init_db() -> None:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA busy_timeout=5000")
         _conn.executescript(_SCHEMA)
+        # migrations idempotentes (bases existantes)
+        for col, ddl in (("cancel", "INTEGER DEFAULT 0"), ("pcap", "TEXT")):
+            try:
+                _conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
+            except sqlite3.OperationalError:
+                pass
         _conn.commit()
 
 
@@ -58,15 +66,15 @@ def _row_to_job(row: sqlite3.Row) -> dict:
 
 
 def create_job(hash_22000: str, ssid: str | None, bssid: str | None,
-               attack_plan: dict | None) -> str:
+               attack_plan: dict | None, pcap: str | None = None) -> str:
     job_id = uuid.uuid4().hex
     now = time.time()
     with _lock:
         _conn.execute(
             "INSERT INTO jobs (id, hash_22000, ssid, bssid, attack_plan, status,"
-            " created_at, updated_at) VALUES (?,?,?,?,?, 'queued', ?, ?)",
+            " pcap, created_at, updated_at) VALUES (?,?,?,?,?, 'queued', ?, ?, ?)",
             (job_id, hash_22000, ssid, bssid,
-             json.dumps(attack_plan) if attack_plan else None, now, now),
+             json.dumps(attack_plan) if attack_plan else None, pcap, now, now),
         )
         _conn.commit()
     return job_id
@@ -130,7 +138,7 @@ def update_progress(job_id: str, progress: float, tried: int) -> bool:
 
 def finish_job(job_id: str, status: str, password: str | None = None,
                error: str | None = None) -> bool:
-    assert status in ("found", "not_found", "error")
+    assert status in ("found", "not_found", "error", "stopped")
     now = time.time()
     with _lock:
         cur = _conn.execute(
@@ -140,3 +148,47 @@ def finish_job(job_id: str, status: str, password: str | None = None,
         )
         _conn.commit()
         return cur.rowcount > 0
+
+
+def request_cancel(job_id: str) -> str | None:
+    """Demande l'arrêt d'un job. queued -> 'stopped' direct ; running -> flag cancel
+    (le worker interrompt hashcat et poste 'stopped'). Retourne l'action, ou None si absent."""
+    now = time.time()
+    with _lock:
+        row = _conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        st = row["status"]
+        if st == "queued":
+            _conn.execute("UPDATE jobs SET status='stopped', progress=100, updated_at=? WHERE id=?",
+                          (now, job_id))
+            _conn.commit()
+            return "stopped"
+        if st == "running":
+            _conn.execute("UPDATE jobs SET cancel=1, updated_at=? WHERE id=?", (now, job_id))
+            _conn.commit()
+            return "canceling"
+        return "noop"
+
+
+def is_canceled(job_id: str) -> bool:
+    with _lock:
+        row = _conn.execute("SELECT cancel FROM jobs WHERE id=?", (job_id,)).fetchone()
+    return bool(row and row["cancel"])
+
+
+def delete_job(job_id: str) -> dict | None:
+    """Supprime le job et retourne sa ligne (pour nettoyer les fichiers associés)."""
+    with _lock:
+        row = _conn.execute("SELECT * FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if row is None:
+            return None
+        _conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+        _conn.commit()
+    return _row_to_job(row)
+
+
+def count_pcap_refs(pcap: str) -> int:
+    with _lock:
+        row = _conn.execute("SELECT COUNT(*) FROM jobs WHERE pcap=?", (pcap,)).fetchone()
+    return int(row[0] if row else 0)

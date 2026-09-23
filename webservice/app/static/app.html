@@ -68,8 +68,9 @@
         <th class="sort" data-k="created_at">Date/heure</th>
         <th class="sort" data-k="worker_id">Worker</th>
         <th class="sort" data-k="status">Statut</th>
+        <th>Actions</th>
       </tr></thead>
-      <tbody id="tbody"><tr class="tbl-empty"><td colspan="5">Aucun job pour l'instant.</td></tr></tbody>
+      <tbody id="tbody"><tr class="tbl-empty"><td colspan="6">Aucun job pour l'instant.</td></tr></tbody>
     </table>
   </div>
 </main>
@@ -146,6 +147,7 @@ const STATES = {
   running:  { c: 'running',  t: 'crack…' },
   found:    { c: 'found',    t: 'trouvé' },
   not_found:{ c: 'notfound', t: 'non trouvé' },
+  stopped:  { c: 'stopped',  t: 'arrêté' },
   error:    { c: 'error',    t: 'erreur' },
 };
 
@@ -170,7 +172,7 @@ function cmp(a, b) {
 function pwCell(j) {
   if (j.status === 'found') return '<span class="val" title="cliquer pour copier">' + esc(j.password) + '</span>';
   if (j.status === 'not_found') return '<span class="none">non trouvé</span>';
-  if (j.status === 'error') return '<span class="none">—</span>';
+  if (j.status === 'error' || j.status === 'stopped') return '<span class="none">—</span>';
   return '<span class="pending"><span class="spinner"></span> en cours…</span>';
 }
 
@@ -178,12 +180,18 @@ function rowHtml(j) {
   const st = STATES[j.status] || STATES.queued;
   let status = '<span class="badge ' + st.c + '">' + st.t + '</span>';
   if (j.status === 'error' && j.error) status += '<div class="err">' + esc(j.error) + '</div>';
+  const canStop = (j.status === 'queued' || j.status === 'running');
+  const actions = '<div class="row-actions">'
+    + (canStop ? '<button class="ico stop" data-id="' + j.job_id + '" title="Arrêter le crack">&#9632;</button>' : '')
+    + '<button class="ico trash" data-id="' + j.job_id + '" title="Supprimer le crack et le pcap">&#128465;</button>'
+    + '</div>';
   return '<tr>'
     + '<td class="c-ssid">' + (esc(j.ssid) || '<span style="color:var(--ink-4)">inconnu</span>') + '</td>'
     + '<td class="c-pw">' + pwCell(j) + '</td>'
     + '<td class="c-when">' + dt(j.created_at) + '</td>'
     + '<td class="c-worker">' + (esc(j.worker_id) || '—') + '</td>'
     + '<td class="c-status">' + status + '</td>'
+    + '<td class="c-act">' + actions + '</td>'
     + '</tr>';
 }
 
@@ -194,7 +202,7 @@ function render() {
       th.insertAdjacentHTML('beforeend', '<span class="arr">' + (sortDir > 0 ? '▲' : '▼') + '</span>');
   });
   const tb = document.getElementById('tbody');
-  if (!jobs.length) { tb.innerHTML = '<tr class="tbl-empty"><td colspan="5">Aucun job pour l\'instant.</td></tr>'; return; }
+  if (!jobs.length) { tb.innerHTML = '<tr class="tbl-empty"><td colspan="6">Aucun job pour l\'instant.</td></tr>'; return; }
   tb.innerHTML = jobs.slice().sort(cmp).map(rowHtml).join('');
 }
 
@@ -205,6 +213,22 @@ document.getElementById('tbody').addEventListener('click', (e) => {
   navigator.clipboard.writeText(el.textContent).then(() => {
     el.classList.add('copied'); setTimeout(() => el.classList.remove('copied'), 900);
   }).catch(() => {});
+});
+
+// Boutons Stop (arrêter un crack) et Poubelle (supprimer job + pcap).
+document.getElementById('tbody').addEventListener('click', async (e) => {
+  const stopB = e.target.closest('.ico.stop');
+  const trashB = e.target.closest('.ico.trash');
+  if (stopB) {
+    stopB.disabled = true;
+    try { await fetch('/api/jobs/' + encodeURIComponent(stopB.dataset.id) + '/stop', { method: 'POST' }); } catch (_) {}
+    refresh();
+  } else if (trashB) {
+    if (!confirm('Supprimer ce crack et son fichier pcap ?')) return;
+    trashB.disabled = true;
+    try { await fetch('/api/jobs/' + encodeURIComponent(trashB.dataset.id), { method: 'DELETE' }); } catch (_) {}
+    refresh();
+  }
 });
 
 async function refresh() {

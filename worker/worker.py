@@ -56,14 +56,24 @@ def post_result(job_id: str, status: str, password: str | None = None,
     r.raise_for_status()
 
 
+def check_cancel(job_id: str) -> bool:
+    try:
+        r = requests.get(f"{SERVER}/jobs/{job_id}/cancel", headers=HEADERS, timeout=10)
+        return bool(r.ok and r.json().get("cancel"))
+    except requests.RequestException:
+        return False
+
+
 def crack(job: dict) -> tuple[str, str | None, str | None]:
-    """Retourne (status, password, error). status ∈ found|not_found|error."""
+    """Retourne (status, password, error). status ∈ found|not_found|error|stopped.
+    hashcat tourne en process suivable : on sonde l'annulation et on le tue si Stop demandé."""
     if not WORDLIST or not os.path.exists(WORDLIST):
         return "error", None, f"WIFITEST_WORDLIST introuvable: {WORDLIST!r}"
 
     with tempfile.TemporaryDirectory() as tmp:
         hash_file = os.path.join(tmp, "hash.22000")
         out_file = os.path.join(tmp, "cracked.txt")
+        err_file = os.path.join(tmp, "err.txt")
         with open(hash_file, "w", encoding="ascii") as f:
             f.write(job["hash_22000"].strip() + "\n")
 
@@ -72,24 +82,38 @@ def crack(job: dict) -> tuple[str, str | None, str | None]:
                "--outfile", out_file, "--outfile-format", "2",
                *HASHCAT_EXTRA, hash_file, WORDLIST]
         print(f"[{job['job_id']}] $ {' '.join(cmd)}", flush=True)
-        # hashcat cherche son dossier OpenCL/ de kernels dans le CWD → se placer dans son
-        # répertoire (utile pour le hashcat portable ; inoffensif pour un hashcat du PATH).
+        # hashcat cherche son dossier OpenCL/ de kernels dans le CWD.
         hashcat_dir = os.path.dirname(HASHCAT)
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              cwd=hashcat_dir or None)
+        canceled = False
+        with open(err_file, "w") as ef:
+            proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=ef,
+                                    text=True, cwd=hashcat_dir or None)
+            while proc.poll() is None:
+                if check_cancel(job["job_id"]):
+                    canceled = True
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                    break
+                time.sleep(3)
 
-        # La présence d'un mot de passe dans l'outfile fait foi (plus fiable que le rc).
+        if canceled:
+            print(f"[{job['job_id']}] annulé (Stop)", flush=True)
+            return "stopped", None, None
+
         password = None
         if os.path.exists(out_file):
             content = open(out_file, encoding="utf-8", errors="replace").read().strip()
             if content:
                 password = content.splitlines()[0]
-
         if password:
             return "found", password, None
         if proc.returncode in (0, 1):   # 1 = keyspace épuisé sans hit
             return "not_found", None, None
-        return "error", None, (proc.stderr or proc.stdout or f"rc={proc.returncode}").strip()[:2000]
+        err = open(err_file, encoding="utf-8", errors="replace").read() if os.path.exists(err_file) else ""
+        return "error", None, (err or f"rc={proc.returncode}").strip()[:2000]
 
 
 def handle_one() -> bool:
