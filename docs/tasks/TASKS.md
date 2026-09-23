@@ -93,4 +93,7 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] Worker : hashcat lancé en Popen + sondage annulation toutes les 3 s → kill → statut `stopped`.
 - [x] UI : colonne Actions (■ Stop pour queued/running, 🗑 Poubelle avec confirmation) ; état « arrêté » ; tableau toujours triable/copiable.
 - [x] Déployé Fez+Avignon, **testé** : stop (queued→stopped) + trash (job + pcap effacé) OK.
-- [ ] À finir : recopier `worker.py` à jour sur Anqa (injoignable ce soir) ; valider l'arrêt d'un crack *en cours* sur un vrai job long.
+- [x] `worker.py` à jour recopié sur Anqa (`C:\Tools\wifitest\worker.py`) — Anqa réveillée 2026-09-23.
+- [x] **Arrêt d'un crack en cours validé en réel** sur GPU Anqa (RTX 5070 Ti) : job long (rockyou×best64) `running` → `POST /api/jobs/{id}/stop` → `action:"canceling"` → worker tue hashcat → `stopped` en ~4 s.
+- [x] Aussi validés en réel : stop en file (queued→stopped), poubelle (job + pcap effacé), crack normal (radar → `found`).
+- [x] **Worker Anqa persistant** : tâche planifiée `WifiTestWorker` (ONLOGON, session interactive Val, run_worker.bat) créée + démarrée + validée (crack GPU OK). Helper `C:\Tools\wifitest\stop_worker.ps1` pour arrêter le worker.

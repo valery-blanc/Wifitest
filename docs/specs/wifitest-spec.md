@@ -1,6 +1,7 @@
 # WifiTest — Spécification (source de vérité)
 
-> **Version** : v0.5 (M1 : Marauder flashé, contrainte matérielle USB/SD identifiée, 2026-09-22)
+> **Version** : v0.6 (FEAT-001 : UI pcap.zitoon.com upload→crack, boutons Stop/Poubelle
+> validés en réel sur GPU Anqa, worker Anqa persistant en tâche planifiée, 2026-09-23)
 > **Nature** : banc d'audit de robustesse de mot de passe WiFi (test de sécurité autorisé).
 > Ce fichier reflète à tout moment le comportement RÉEL du code. À mettre à jour à chaque
 > FEAT-XXX / BUG-XXX.
@@ -101,9 +102,16 @@ Une `.fap` de confort (afficher l'état, déclencher une capture) pourra venir p
 - **DNS** : ajouter l'enregistrement `wifitest.zitoon.com` chez le registrar (ACME émettra le cert).
 
 ### 4.5 Worker Anqa (`worker-anqa/`)
-- Process qui poll le webservice (LAN `192.168.0.221` ou public), exécute `hashcat -m 22000`
+- Process qui poll le webservice (public `https://wifitest.zitoon.com`), exécute `hashcat -m 22000`
   selon le plan d'attaque, poste progression + résultat. Tourne quand Anqa est up (9h-21h).
-- **Stack** : Python + hashcat (Windows, CUDA, RTX 5070 Ti). `[TODO]` service vs tâche planifiée.
+- **Stack** : Python + hashcat (Windows, CUDA, RTX 5070 Ti). Le worker lance hashcat en
+  sous-process **suivable** (`subprocess.Popen`) et sonde `GET /jobs/{id}/cancel` toutes les 3 s :
+  si annulation demandée, il tue hashcat et poste le statut `stopped`.
+- **Déploiement (résolu)** : **tâche planifiée `WifiTestWorker`** sur Anqa (`ONLOGON`, session
+  interactive de Val → accès GPU OK), qui lance `C:\Tools\wifitest\run_worker.bat`
+  (env : SERVER, WORKER_TOKEN, HASHCAT, WORDLIST, `-d 1`). Arrêt manuel :
+  `C:\Tools\wifitest\stop_worker.ps1`. ⚠️ hashcat doit être lancé depuis son dossier
+  (`cwd = dossier hashcat`) sinon `./OpenCL/: No such file` (BUG-002).
 
 ### 4.6 Worker RunPod (`worker-runpod/`)
 - **Pod** (pas serverless) multi-RTX 4090, démarré à la demande (Anqa down ou tier lourd).
@@ -112,13 +120,32 @@ Une `.fap` de confort (afficher l'état, déclencher une capture) pourra venir p
 - **Stack** : `[TODO]` API RunPod (cf. skills `/vb-gpu-loue`, `/vb-rebuild-serverless`).
   3e compte RunPod dédié à WifiTest = choix d'isolation de facturation (optionnel).
 
-## 5. Protocole webservice (esquisse)
-`[TODO]` finaliser :
-- `POST /jobs` → `{hash_22000, ssid, bssid, attack_plan?}` → `{job_id}`
-- `GET /jobs/{id}` → `{status: queued|running|found|not_found|error, progress, password?, tried}`
-- `GET /jobs/next` (worker, auth worker) → un job à traiter
-- `POST /jobs/{id}/progress` / `POST /jobs/{id}/result`
-- Auth : bearer token distinct téléphone / worker. HTTPS obligatoire.
+## 5. Protocole webservice (implémenté)
+**Statuts d'un job** : `queued → running → (found | not_found | error | stopped)`.
+
+Endpoints **téléphone/worker** (bearer token, tokens distincts) :
+- `POST /jobs` (token téléphone) → `{hash_22000 (WPA*…), ssid, bssid, attack_plan?}` → `{job_id}`
+- `GET /jobs/{id}` (token téléphone) → `{status, progress, password?, error?, tried, ssid}`
+- `GET /jobs/next` (token worker) → un job à traiter (claim atomique)
+- `POST /jobs/{id}/progress` / `POST /jobs/{id}/result` (token worker ; `result.status`
+  accepte aussi `stopped`)
+- `GET /jobs/{id}/cancel` (token worker) → `{cancel: bool}` — sondé par le worker pour
+  interrompre hashcat.
+
+Endpoints **UI** `pcap.zitoon.com` (session par cookie, mot de passe `WIFITEST_UI_PASSWORD`,
+anti-bruteforce par IP) :
+- `POST /api/login` / `POST /api/logout`
+- `POST /api/upload` : pcap → `hcxpcapngtool` → 1 job par handshake/PMKID ; le pcap source
+  est conservé dans `/data/pcaps/<uuid>.pcap` (référencé par les jobs pour la suppression).
+- `GET /api/jobs` : liste (tableau UI triable, cellules copiables : SSID, mot de passe,
+  date/heure, worker, statut).
+- `POST /api/jobs/{id}/stop` (**bouton Stop**) : `queued → stopped` direct ; `running →`
+  flag `cancel=1` (le worker interrompt hashcat et poste `stopped`). Réponses :
+  `action: stopped | canceling | noop`.
+- `DELETE /api/jobs/{id}` (**bouton Poubelle**) : supprime le job **et** le pcap associé
+  si plus aucun job ne le référence (`count_pcap_refs == 0`).
+- `GET /api/status` (Anqa joignable + mode + crédit RunPod), `POST /api/anqa/wake` (WOL via
+  gqqfm-power), `POST /api/mode` (pod seul / anqa seul / pod si anqa down).
 
 ## 6. Stratégie de cracking en cascade (le vrai levier)
 Le job manager lance **du plus probable au moins probable**, s'arrête au 1er hit :
