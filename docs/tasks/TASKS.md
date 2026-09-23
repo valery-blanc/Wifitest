@@ -1,5 +1,24 @@
 # TASKS
 
+## ⏭️ REPRISE — état au 23/09
+- **Dernier commit** : `9aeadce` — FEAT-002 (cascade bornée) + FEAT-003 (suivi/barre, Play,
+  budget par job, worker Anqa sans fenêtre). Poussé sur `main`.
+- **Déploiement** : webservice **Fez** (actif) + **Avignon** (secours) à jour (health 200) ;
+  **worker Anqa** relancé avec le nouveau `worker.py` via tâche `WifiTestWorker` (lanceur VBS
+  caché, logs → `C:\Tools\wifitest\worker.log`).
+- **Tests** : pas de suite automatisée dans ce projet. Validations **manuelles en réel** sur
+  GPU Anqa (réseau `radar`), mesurées au commit `9aeadce` : cascade (90 s), Stop en file/en
+  cours, Poubelle+pcap, barre/passe/budget par job, Play.
+- 🔴 **À FAIRE EN PREMIER** : rien de bloquant.
+- 🧨 **HORS PÉRIMÈTRE / réfuté** : `Sunrise_1494918` n'est PAS un réseau de Val (« non/pas
+  sûr », 23/09) → crack **arrêté**, jobs + pcap **purgés**. Ne pas re-cracker. Avant tout
+  crack d'un SSID à nom de box FAI → **demander confirmation** (mémoire
+  `wifitest-perimetre-autorisation`).
+- ⏳ **Ouvert (avec motif)** : pod RunPod ne cracke pas encore (bootstrap corrigé, **non
+  validé** — besoin des logs du pod en direct) ; capture **5 GHz** bloquée matériel (carte
+  BW16 à acquérir) ; app **Android** M2 non démarrée ; candidats **FAI déduits du SSID**
+  (raffinement de la cascade FEAT-002) ; durcissement sécurité webservice (rate limit/TTL).
+
 ## Architecture — décisions verrouillées (2026-09-21)
 - [x] Transport ESP32 → téléphone : **USB-CDC (OTG)**
 - [x] Plan de contrôle : **webservice sur Fez** (Traefik `wifitest.zitoon.com`, 24/7)
@@ -60,10 +79,10 @@ hoppe et rate les trames de l'AP (M1/M3).
   `run_worker.bat --once` (ou boucle sans arg). Validé sur la prod (2026-09-22).
 - [ ] `worker-runpod/` : template pod multi-4090 + wordlists sur network volume + self-terminate
 - [ ] Auto-spin sur Anqa down / tier lourd
-- [ ] Plan d'attaque en tiers (candidats FAI → rockyou+règles → masques)
+- [ ] Plan d'attaque en tiers (candidats FAI → rockyou+règles → masques) — ⚠️ tiers rockyou+règles(best64/OneRule)+masques **livrés par FEAT-002** (cascade bornée) ; reste les **candidats déduits du SSID** (défauts FAI).
 
 ### M4 — Finitions
-- [ ] UI progression, repli deauth robuste
+- [ ] UI progression, repli deauth robuste — ⚠️ **UI progression livrée (FEAT-003)** : barre + passe + durée ; reste le repli deauth robuste (capture).
 - [ ] Durcissement sécurité webservice (rate limit, TTL, auto-suppression des hash)
 
 ## Done
@@ -75,8 +94,8 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] Tableau des jobs (SSID, mot de passe, date/heure, worker, statut) : **triable par colonne**, cellules copiables (mdp clic-copie)
 - [x] Bandeau : **statut Anqa + bouton WOL** (via gqqfm-power), **3 modes** (anqa/pod/auto), **crédit RunPod** (2 comptes, myself.clientBalance)
 - [x] Déployé Fez + Avignon (Traefik pcap.zitoon.com), testé (login/upload/status/mode ; power joignable)
-- [ ] **Phase 2** : dispatcher + pod RunPod (hashcat) auto-spin/stop selon le mode ; worker Anqa permanent
-- [ ] Test utilisateur (demain) : UI complète + vrai crack via Anqa (WOL) et via pod RunPod
+- [ ] **Phase 2** : dispatcher + pod RunPod (hashcat) auto-spin/stop selon le mode ; worker Anqa permanent — ⚠️ **worker Anqa permanent FAIT** (tâche `WifiTestWorker`, 23/09) + dispatcher validé ; **pod ne cracke pas encore**.
+- [ ] Test utilisateur (demain) : UI complète + vrai crack via Anqa (WOL) et via pod RunPod — ⚠️ **Anqa : crack réel validé** (23/09) ; **pod RunPod reste à valider**.
 
 #### FEAT-001 Phase 2 — dispatcher + pod RunPod (2026-09-23)
 - [x] Fonctions pod : create (podFindAndDeployOnDemand) / terminate / list — **validé** (create→terminate→`pods:[]`).
@@ -84,7 +103,7 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] Watchdog détaché indépendant (arrêt forcé) — **validé** : a terminé le pod, `pods:[]`, aucune fuite de crédit. Coût des tests ~$0,25.
 - [!] **Pod ne cracke pas encore** : au 1er test l'image `dizcza/docker-hashcat` avait un ENTRYPOINT (dockerArgs ignoré) ; passé à `nvidia/cuda:...` mais le worker n'a pas tourné (image de base **sans curl** → le fetch du bootstrap échouait). **Fix appliqué** (dockerArgs installe curl avant de fetch) — **à VALIDER demain** avec logs du pod en direct.
 - [x] **Dispatcher DÉSACTIVÉ pour la nuit** (`WIFITEST_DISPATCHER=0` sur Fez, mode=anqa) → aucun pod ne spinnera. Réactiver : `WIFITEST_DISPATCHER=1` + restart.
-- [ ] Demain : réactiver dispatcher, lancer 1 pod, tirer ses logs (RunPod), corriger le bootstrap si besoin → 1er crack via pod. Worker Anqa permanent (tâche planifiée) une fois Anqa réveillée (WOL/8h).
+- [ ] Demain : réactiver dispatcher, lancer 1 pod, tirer ses logs (RunPod), corriger le bootstrap si besoin → 1er crack via pod. ~~Worker Anqa permanent (tâche planifiée)~~ ✅ **FAIT (23/09)**.
 
 #### FEAT-001 — boutons Stop + Poubelle (2026-09-23)
 - [x] DB : colonnes `cancel` + `pcap` (migration idempotente) ; request_cancel / is_canceled / delete_job / count_pcap_refs.
@@ -103,7 +122,7 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] Copie `webservice/app/static/worker.py` (pod).
 - [x] Anqa : OneRuleToRuleThemAll.rule téléchargé (`C:\Tools\wifitest\`), best64 présent (livré hashcat), rockyou présent ; `run_worker.bat` = WORDLIST(visitor)+ROCKYOU+MAX_RUNTIME=3600 ; tâche `WifiTestWorker` relancée.
 - [x] Testé (budget 90 s) : cascade enchaîne rockyou → rockyou+best64 → budget épuisé → not_found (budget respecté).
-- [ ] À confirmer par Val : re-tester le fichier qui donnait not_found → doit tourner plus longtemps / trouver plus.
+- [x] Cascade validée : test 90 s (rockyou → best64 → budget épuisé) + cascade active en réel. (Le fichier re-testé par Val était `Sunrise` = hors périmètre → arrêté, cf. REPRISE.)
 - [ ] Pod RunPod : `bootstrap.sh` devra fournir rockyou + rules + budget (quand le pod sera validé).
 
 #### FEAT-003 — suivi d'avancement + Play + budget + worker sans fenêtre (2026-09-23)
@@ -113,5 +132,5 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] UI : input **Budget (min)** ; **barre de progression** + passe en cours + durée écoulée (ticker 1 s, horloge serveur) ; bouton **▶ Play** (relance stopped/not_found/error).
 - [x] Déployé Fez+Avignon **sans interrompre le scan en cours** (hashcat continue ; job Sunrise resté `running`). Endpoints validés (rerun→409 sur running, app.html sert les éléments).
 - [x] Anqa : worker.py **stagé** (actif au prochain redémarrage du worker) ; `run_worker.bat` logue dans `worker.log` ; tâche `WifiTestWorker` relancée via **VBS caché** (`launch_hidden.vbs`) → plus de fenêtre au prochain lancement.
-- [ ] **À activer après la fin du scan** : redémarrer le worker Anqa pour charger le nouveau worker.py → passe affichée + budget par job honorés (l'ancien process en mémoire ignore encore ces deux points).
-- [ ] Validation Val : barre/passe/durée, Play, budget en minutes.
+- [x] Worker Anqa relancé (23/09) après arrêt du scan → nouveau worker.py chargé : passe affichée + budget par job validés en réel sur `radar`.
+- [x] Validation Val : « ok déploie les nouvelles features » (feu vert) ; validation réelle radar OK (budget 120 s pris en compte, passe `wordlist ciblée (1/7)`, found).
