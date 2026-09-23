@@ -77,3 +77,11 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] Déployé Fez + Avignon (Traefik pcap.zitoon.com), testé (login/upload/status/mode ; power joignable)
 - [ ] **Phase 2** : dispatcher + pod RunPod (hashcat) auto-spin/stop selon le mode ; worker Anqa permanent
 - [ ] Test utilisateur (demain) : UI complète + vrai crack via Anqa (WOL) et via pod RunPod
+
+#### FEAT-001 Phase 2 — dispatcher + pod RunPod (2026-09-23)
+- [x] Fonctions pod : create (podFindAndDeployOnDemand) / terminate / list — **validé** (create→terminate→`pods:[]`).
+- [x] Dispatcher (thread, nœud actif) : spin selon mode (anqa/pod/auto), arrêt sur inactivité, garde-fou durée max, nettoyage au démarrage. **Validé** : a bien spinné un pod pour un job en file (mode auto, Anqa down).
+- [x] Watchdog détaché indépendant (arrêt forcé) — **validé** : a terminé le pod, `pods:[]`, aucune fuite de crédit. Coût des tests ~$0,25.
+- [!] **Pod ne cracke pas encore** : au 1er test l'image `dizcza/docker-hashcat` avait un ENTRYPOINT (dockerArgs ignoré) ; passé à `nvidia/cuda:...` mais le worker n'a pas tourné (image de base **sans curl** → le fetch du bootstrap échouait). **Fix appliqué** (dockerArgs installe curl avant de fetch) — **à VALIDER demain** avec logs du pod en direct.
+- [x] **Dispatcher DÉSACTIVÉ pour la nuit** (`WIFITEST_DISPATCHER=0` sur Fez, mode=anqa) → aucun pod ne spinnera. Réactiver : `WIFITEST_DISPATCHER=1` + restart.
+- [ ] Demain : réactiver dispatcher, lancer 1 pod, tirer ses logs (RunPod), corriger le bootstrap si besoin → 1er crack via pod. Worker Anqa permanent (tâche planifiée) une fois Anqa réveillée (WOL/8h).

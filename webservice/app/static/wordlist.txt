@@ -1,0 +1,7 @@
+password
+12345678
+motdepasse
+admin1234
+alexandrealexandre
+alexandrealexandre1
+hashcat!

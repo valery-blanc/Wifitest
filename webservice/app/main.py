@@ -14,6 +14,7 @@ import secrets
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.request
 
@@ -48,6 +49,8 @@ app.mount("/static", StaticFiles(directory=os.path.join(HERE, "static")), name="
 @app.on_event("startup")
 def _startup() -> None:
     db.init_db()
+    if DISPATCHER_ON:
+        threading.Thread(target=_dispatcher_loop, daemon=True).start()
 
 
 # ---- auth workers / téléphone (token) --------------------------------------
@@ -327,6 +330,86 @@ def api_set_mode(request: Request, m: ModeReq):
     s["mode"] = m.mode
     _save_settings(s)
     return {"ok": True, "mode": m.mode}
+
+
+# ---- RunPod pod (fallback GPU) : create / terminate / dispatcher -----------
+
+RUNPOD_POD_KEY = os.environ.get("RUNPOD_API_KEY_2", "") or os.environ.get("RUNPOD_API_KEY", "")
+POD_IMAGE = os.environ.get("WIFITEST_POD_IMAGE", "dizcza/docker-hashcat:cuda")
+POD_GPU = os.environ.get("WIFITEST_POD_GPU", "NVIDIA GeForce RTX 4090")
+POD_NAME = "wifitest-crack"
+MAX_POD_LIFE = int(os.environ.get("WIFITEST_MAX_POD_LIFE", "1800"))  # garde-fou 30 min
+PUBLIC_URL = os.environ.get("WIFITEST_PUBLIC_URL", "https://wifitest.zitoon.com").rstrip("/")
+DISPATCHER_ON = os.environ.get("WIFITEST_DISPATCHER", "0") == "1"
+
+
+def _pod_gql(query: str) -> dict:
+    if not RUNPOD_POD_KEY:
+        raise RuntimeError("Clé RunPod manquante")
+    return _runpod_gql(query, RUNPOD_POD_KEY)
+
+
+def _pod_create() -> str | None:
+    # L'image de base CUDA n'a pas curl → l'installer avant de récupérer le bootstrap.
+    boot = ("bash -c 'apt-get update -qq && apt-get install -y -qq curl ca-certificates && "
+            f"curl -fsSL {PUBLIC_URL}/static/bootstrap.sh | bash'")
+    envs = [("WIFITEST_SERVER", PUBLIC_URL), ("WIFITEST_WORKER_TOKEN", WORKER_TOKEN),
+            ("RUNPOD_API_KEY", RUNPOD_POD_KEY), ("WIFITEST_IDLE_EXIT", "180")]
+    envg = ",".join('{key:"%s",value:"%s"}' % (k, v) for k, v in envs)
+    q = ('mutation{podFindAndDeployOnDemand(input:{cloudType:ALL,gpuCount:1,gpuTypeId:"%s",'
+         'name:"%s",imageName:"%s",containerDiskInGb:20,volumeInGb:0,dockerArgs:"%s",env:[%s]}){id}}'
+         % (POD_GPU, POD_NAME, POD_IMAGE, boot, envg))
+    d = _pod_gql(q)
+    return (((d.get("data") or {}).get("podFindAndDeployOnDemand")) or {}).get("id")
+
+
+def _pod_terminate(pid: str) -> None:
+    try:
+        _pod_gql('mutation{podTerminate(input:{podId:"%s"})}' % pid)
+    except Exception:
+        pass
+
+
+def _pods_wifitest() -> list[dict]:
+    try:
+        d = _pod_gql("query{myself{pods{id name desiredStatus}}}")
+        pods = ((d.get("data") or {}).get("myself") or {}).get("pods") or []
+        return [p for p in pods if (p.get("name") or "").startswith(POD_NAME)]
+    except Exception:
+        return []
+
+
+def _dispatch_tick() -> None:
+    s = _settings()
+    pid = s.get("pod_id")
+    started = s.get("pod_started", 0)
+    jobs = db.list_jobs(300)
+    active = [j for j in jobs if j["status"] in ("queued", "running")]
+    queued = [j for j in jobs if j["status"] == "queued"]
+
+    if pid and (time.time() - started > MAX_POD_LIFE or not active):
+        _pod_terminate(pid)
+        s.pop("pod_id", None); s.pop("pod_started", None); _save_settings(s)
+        return
+
+    mode = get_mode()
+    want_pod = mode in ("pod", "auto") and queued and (mode == "pod" or not anqa_reachable())
+    if want_pod and not pid:
+        new = _pod_create()
+        if new:
+            s["pod_id"] = new; s["pod_started"] = time.time(); _save_settings(s)
+
+
+def _dispatcher_loop() -> None:
+    for p in _pods_wifitest():       # nettoyage au démarrage
+        _pod_terminate(p["id"])
+    s = _settings(); s.pop("pod_id", None); s.pop("pod_started", None); _save_settings(s)
+    while True:
+        try:
+            _dispatch_tick()
+        except Exception:
+            pass
+        time.sleep(15)
 
 
 # ---- endpoints file de jobs (téléphone / workers) --------------------------
