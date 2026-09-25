@@ -314,21 +314,39 @@ def anqa_reachable() -> bool:
     return False
 
 
-def _runpod_gql(query: str, key: str) -> dict:
-    body = json.dumps({"query": query}).encode()
+def _runpod_gql(query: str, key: str, variables: dict | None = None) -> dict:
+    payload: dict = {"query": query}
+    if variables:
+        payload["variables"] = variables
+    body = json.dumps(payload).encode()
     req = urllib.request.Request(
         "https://api.runpod.io/graphql?api_key=" + key, data=body,
         headers={"Content-Type": "application/json", "User-Agent": "curl/8.0"})
-    with urllib.request.urlopen(req, timeout=10) as r:
+    with urllib.request.urlopen(req, timeout=20) as r:
         return json.loads(r.read().decode())
 
 
+def _mask_email(email: str) -> str:
+    if not email or "@" not in email:
+        return ""
+    local, dom = email.split("@", 1)
+    shown = (local[:2] + "***") if local else "***"
+    return shown + "@" + dom
+
+
 def _runpod_balance(key: str) -> dict | None:
+    """Solde officiel `clientBalance` (le même champ que la console et `runpodctl user`).
+    On ne demande pas `clientLifetimeSpend` : cette clé renvoie Unauthorized et n'a rien
+    à voir avec le crédit restant."""
     try:
-        d = _runpod_gql("query{myself{clientBalance currentSpendPerHr spendLimit}}", key)
+        d = _runpod_gql(
+            "query{myself{email clientBalance currentSpendPerHr endpoints{name}}}", key)
         m = (d.get("data") or {}).get("myself") or {}
+        if m.get("clientBalance") is None:
+            return None
+        names = [e.get("name") for e in (m.get("endpoints") or []) if e.get("name")]
         return {"balance": m.get("clientBalance"), "spend_hr": m.get("currentSpendPerHr"),
-                "limit": m.get("spendLimit")}
+                "email": _mask_email(m.get("email") or ""), "endpoints": names}
     except Exception:
         return None
 
@@ -348,8 +366,15 @@ def runpod_accounts() -> list[dict]:
     out = []
     for label, key in keys:
         b = _runpod_balance(key)
-        out.append({"label": label, "balance": (b or {}).get("balance"),
-                    "spend_hr": (b or {}).get("spend_hr"), "ok": b is not None})
+        out.append({
+            "label": label,
+            "balance": (b or {}).get("balance"),
+            "spend_hr": (b or {}).get("spend_hr"),
+            "email": (b or {}).get("email") or "",
+            "endpoints": (b or {}).get("endpoints") or [],
+            "pod": bool(RUNPOD_POD_KEY) and key == RUNPOD_POD_KEY,
+            "ok": b is not None,
+        })
     return out
 
 
@@ -363,7 +388,16 @@ def _power(path: str) -> dict:
 @app.get("/api/status")
 def api_status(request: Request):
     require_session(request)
-    return {"anqa": anqa_reachable(), "mode": get_mode(), "runpod": runpod_accounts()}
+    s = _settings()
+    return {
+        "anqa": anqa_reachable(), "mode": get_mode(), "runpod": runpod_accounts(),
+        "pod": {
+            "gpus": [g.replace("NVIDIA GeForce ", "") for g in POD_GPUS],
+            "gpu_count": POD_GPU_COUNT, "pod_count": POD_COUNT,
+            "dispatcher": DISPATCHER_ON, "active": len(s.get("pods") or []),
+            "error": s.get("pod_error") or "",
+        },
+    }
 
 
 @app.post("/api/anqa/wake")
@@ -392,33 +426,70 @@ def api_set_mode(request: Request, m: ModeReq):
 
 # ---- RunPod pod (fallback GPU) : create / terminate / dispatcher -----------
 
+# Compte 2 (RUNPOD_API_KEY_2) paie les pods. Compte 1 (RUNPOD_API_KEY) est celui de
+# serverless 1 (gqqfm) : on ne le débite pas pour un crack.
 RUNPOD_POD_KEY = os.environ.get("RUNPOD_API_KEY_2", "") or os.environ.get("RUNPOD_API_KEY", "")
-POD_IMAGE = os.environ.get("WIFITEST_POD_IMAGE", "dizcza/docker-hashcat:cuda")
-POD_GPU = os.environ.get("WIFITEST_POD_GPU", "NVIDIA GeForce RTX 4090")
+POD_IMAGE = os.environ.get(
+    "WIFITEST_POD_IMAGE", "nvidia/cuda:12.4.1-runtime-ubuntu22.04")
+# Une carte par pod. gpuTypeIdList = priorité : RunPod prend la première qui a du stock.
+_DEFAULT_GPUS = (
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA GeForce RTX 3090",
+    "NVIDIA GeForce RTX 4080 SUPER",
+    "NVIDIA GeForce RTX 4080",
+    "NVIDIA GeForce RTX 3090 Ti",
+    "NVIDIA GeForce RTX 4070 Ti SUPER",
+    "NVIDIA GeForce RTX 4070 Ti",
+    "NVIDIA GeForce RTX 5090",
+)
+POD_GPUS = [g.strip() for g in os.environ.get(
+    "WIFITEST_POD_GPUS", ";".join(_DEFAULT_GPUS)).split(";") if g.strip()]
+POD_GPU_COUNT = max(1, int(os.environ.get("WIFITEST_POD_GPU_COUNT", "1")))
+POD_COUNT = max(1, int(os.environ.get("WIFITEST_POD_COUNT", "4")))
 POD_NAME = "wifitest-crack"
-MAX_POD_LIFE = int(os.environ.get("WIFITEST_MAX_POD_LIFE", "1800"))  # garde-fou 30 min
+MAX_POD_LIFE = int(os.environ.get("WIFITEST_MAX_POD_LIFE", "5400"))  # garde-fou 90 min
 PUBLIC_URL = os.environ.get("WIFITEST_PUBLIC_URL", "https://wifitest.zitoon.com").rstrip("/")
 DISPATCHER_ON = os.environ.get("WIFITEST_DISPATCHER", "0") == "1"
 
 
-def _pod_gql(query: str) -> dict:
+def _pod_gql(query: str, variables: dict | None = None) -> dict:
     if not RUNPOD_POD_KEY:
         raise RuntimeError("Clé RunPod manquante")
-    return _runpod_gql(query, RUNPOD_POD_KEY)
+    return _runpod_gql(query, RUNPOD_POD_KEY, variables)
 
 
-def _pod_create() -> str | None:
-    # L'image de base CUDA n'a pas curl → l'installer avant de récupérer le bootstrap.
+def _pod_create() -> tuple[str | None, str | None]:
+    # Image CUDA sans curl ni hashcat : on installe curl ici, le bootstrap fait le reste.
+    # dockerArgs est passé en variable GraphQL (pas interpolé) pour ne pas casser sur un guillemet.
     boot = ("bash -c 'apt-get update -qq && apt-get install -y -qq curl ca-certificates && "
             f"curl -fsSL {PUBLIC_URL}/static/bootstrap.sh | bash'")
     envs = [("WIFITEST_SERVER", PUBLIC_URL), ("WIFITEST_WORKER_TOKEN", WORKER_TOKEN),
             ("RUNPOD_API_KEY", RUNPOD_POD_KEY), ("WIFITEST_IDLE_EXIT", "180")]
-    envg = ",".join('{key:"%s",value:"%s"}' % (k, v) for k, v in envs)
-    q = ('mutation{podFindAndDeployOnDemand(input:{cloudType:ALL,gpuCount:1,gpuTypeId:"%s",'
-         'name:"%s",imageName:"%s",containerDiskInGb:20,volumeInGb:0,dockerArgs:"%s",env:[%s]}){id}}'
-         % (POD_GPU, POD_NAME, POD_IMAGE, boot, envg))
-    d = _pod_gql(q)
-    return (((d.get("data") or {}).get("podFindAndDeployOnDemand")) or {}).get("id")
+    variables = {"input": {
+        "cloudType": "ALL",
+        "gpuCount": POD_GPU_COUNT,
+        "gpuTypeIdList": POD_GPUS,
+        "name": POD_NAME,
+        "imageName": POD_IMAGE,
+        "containerDiskInGb": 30,
+        "volumeInGb": 0,
+        "dockerArgs": boot,
+        "env": [{"key": k, "value": v} for k, v in envs],
+    }}
+    q = ("mutation($input: PodFindAndDeployOnDemandInput)"
+         "{podFindAndDeployOnDemand(input:$input){id}}")
+    try:
+        d = _pod_gql(q, variables)
+    except Exception as exc:
+        # Ne pas stringify l'exception : l'URL contient la clé API.
+        code = getattr(exc, "code", None)
+        return None, f"API RunPod injoignable (HTTP {code})" if code else "API RunPod injoignable"
+    errs = d.get("errors") or []
+    pid = (((d.get("data") or {}).get("podFindAndDeployOnDemand")) or {}).get("id")
+    if pid:
+        return pid, None
+    msg = "; ".join(e.get("message") or "erreur RunPod" for e in errs) or "création pod sans id"
+    return None, msg[:500]
 
 
 def _pod_terminate(pid: str) -> None:
@@ -437,31 +508,62 @@ def _pods_wifitest() -> list[dict]:
         return []
 
 
+def _known_pods(s: dict, live: list[dict]) -> list[dict]:
+    """Aligne le suivi local sur les pods réellement là. Un pod sans id mémorisé est adopté."""
+    prev = {p["id"]: p.get("started") for p in (s.get("pods") or []) if p.get("id")}
+    now = time.time()
+    return [{"id": p["id"], "started": prev.get(p["id"], now)} for p in live if p.get("id")]
+
+
 def _dispatch_tick() -> None:
     s = _settings()
-    pid = s.get("pod_id")
-    started = s.get("pod_started", 0)
-    jobs = db.list_jobs(300)
-    active = [j for j in jobs if j["status"] in ("queued", "running")]
-    queued = [j for j in jobs if j["status"] == "queued"]
-
-    if pid and (time.time() - started > MAX_POD_LIFE or not active):
-        _pod_terminate(pid)
-        s.pop("pod_id", None); s.pop("pod_started", None); _save_settings(s)
-        return
-
+    live = _pods_wifitest()
+    pods = _known_pods(s, live)
+    now = time.time()
+    target = db.pod_target(POD_COUNT)
     mode = get_mode()
-    want_pod = mode in ("pod", "auto") and queued and (mode == "pod" or not anqa_reachable())
-    if want_pod and not pid:
-        new = _pod_create()
-        if new:
-            s["pod_id"] = new; s["pod_started"] = time.time(); _save_settings(s)
+    want = target > 0 and mode in ("pod", "auto") and (mode == "pod" or not anqa_reachable())
+    if not want:
+        target = 0
+
+    keep = []
+    for p in pods:
+        too_old = now - float(p.get("started") or now) > MAX_POD_LIFE
+        if too_old or not want:
+            _pod_terminate(p["id"])
+        else:
+            keep.append(p)
+    # Plafond : ne jamais garder plus de pods que de parts encore à faire.
+    for extra in keep[target:]:
+        _pod_terminate(extra["id"])
+    keep = keep[:target]
+
+    created = False
+    err = None
+    while want and len(keep) < target:
+        new, err = _pod_create()
+        if not new:
+            break
+        print(f"[dispatcher] pod {new} créé (1× parmi {len(POD_GPUS)} types)", flush=True)
+        keep.append({"id": new, "started": now})
+        created = True
+    if err and not created:
+        print(f"[dispatcher] création échouée : {err}", flush=True)
+        s["pod_error"] = err
+    elif created:
+        s.pop("pod_error", None)
+    s["pods"] = keep
+    s.pop("pod_id", None)
+    s.pop("pod_started", None)
+    _save_settings(s)
 
 
 def _dispatcher_loop() -> None:
     for p in _pods_wifitest():       # nettoyage au démarrage
         _pod_terminate(p["id"])
-    s = _settings(); s.pop("pod_id", None); s.pop("pod_started", None); _save_settings(s)
+    s = _settings()
+    s.pop("pod_id", None); s.pop("pod_started", None); s["pods"] = []
+    _save_settings(s)
     while True:
         try:
             _dispatch_tick()
@@ -484,12 +586,14 @@ class Progress(BaseModel):
     progress: float = 0
     tried: int = 0
     phase: str | None = None
+    slice: int | None = None
 
 
 class Result(BaseModel):
     status: str
     password: str | None = None
     error: str | None = None
+    slice: int | None = None
 
 
 @app.get("/health")
@@ -507,15 +611,33 @@ def submit_job(req: CreateJob) -> dict:
 
 
 # ⚠️ Route STATIQUE avant la route dynamique /jobs/{job_id}.
+def _worker_allowed(worker_id: str) -> bool:
+    """Le mode UI doit être respecté. Sinon Anqa, qui poll en permanence, prend
+    le job avant que le pod ait fini de démarrer — y compris en mode « pod seul »."""
+    mode = get_mode()
+    is_pod = (worker_id or "").startswith("runpod")
+    if mode == "pod":
+        return is_pod
+    if mode == "anqa":
+        return not is_pod
+    return True
+
+
 @app.get("/jobs/next", dependencies=[Depends(worker_auth)])
 def claim_job(worker_id: str = "worker") -> dict:
-    job = db.claim_next_job(worker_id)
+    if not _worker_allowed(worker_id):
+        return {"job": None}
+    if (worker_id or "").startswith("runpod"):
+        job = db.claim_slice(worker_id, POD_COUNT)
+    else:
+        job = db.claim_next_job(worker_id)
     if job is None:
         return {"job": None}
     return {"job": {
         "job_id": job["id"], "hash_22000": job["hash_22000"], "ssid": job["ssid"],
         "bssid": job["bssid"], "attack_plan": job["attack_plan"],
         "max_runtime": job.get("max_runtime"),
+        "slice": job.get("slice", 0), "slice_count": job.get("slice_count", 1),
     }}
 
 
@@ -533,6 +655,7 @@ def job_status(job_id: str) -> dict:
 def post_progress(job_id: str, p: Progress) -> dict:
     if not db.update_progress(job_id, p.progress, p.tried, p.phase):
         raise HTTPException(404, "Unknown or non-running job")
+    db.touch_slice(job_id, p.slice)
     return {"ok": True}
 
 
@@ -540,7 +663,10 @@ def post_progress(job_id: str, p: Progress) -> dict:
 def post_result(job_id: str, r: Result) -> dict:
     if r.status not in ("found", "not_found", "error", "stopped"):
         raise HTTPException(422, "status invalide")
-    if not db.finish_job(job_id, r.status, r.password, r.error):
+    ok = (db.finish_slice(job_id, r.slice, r.status, r.password, r.error)
+          if r.slice is not None else
+          db.finish_job(job_id, r.status, r.password, r.error))
+    if not ok:
         raise HTTPException(404, "Unknown job")
     return {"ok": True}
 

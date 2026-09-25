@@ -1,7 +1,8 @@
 # WifiTest — Spécification (source de vérité)
 
-> **Version** : v0.7 (FEAT-002 : crack en cascade borné dans le temps ; FEAT-003 : suivi
-> d'avancement + barre, bouton Play, budget par job, worker Anqa sans fenêtre. 2026-09-23)
+> **Version** : v0.8 (FEAT-004 : pod RunPod 4× RTX 4090 sur le compte 2, crédit affiché
+> par compte réel. 2026-09-23)
+> v0.7 : FEAT-002 cascade bornée ; FEAT-003 suivi, Play, budget, worker Anqa sans fenêtre.
 > v0.6 : FEAT-001 UI pcap.zitoon.com upload→crack, Stop/Poubelle, worker Anqa persistant.
 > **Nature** : banc d'audit de robustesse de mot de passe WiFi (test de sécurité autorisé).
 > Ce fichier reflète à tout moment le comportement RÉEL du code. À mettre à jour à chaque
@@ -35,7 +36,7 @@ sur le GPU. Le calcul GPU est **interchangeable** (Anqa ou RunPod).
 
 ```
 [Téléphone Android] ──HTTPS──► [Webservice / file de jobs]  ◄─pull─ [Worker Anqa]   (LAN, 9h-21h, GRATUIT)
-  soumet hash 22000              sur FEZ (Traefik,               ◄─pull─ [Worker RunPod] (à la demande, PAYANT, multi-4090)
+  soumet hash 22000              sur FEZ (Traefik,               ◄─pull─ [Worker RunPod] (à la demande, PAYANT, 4 pods × 1 GPU, compte 2)
   poll job_id ◄──────────────   wifitest.zitoon.com, 24/7)
                                  ── résultat / progression ──►
 ```
@@ -105,7 +106,11 @@ Une `.fap` de confort (afficher l'état, déclencher une capture) pourra venir p
 ### 4.5 Worker Anqa (`worker-anqa/`)
 - Process qui poll le webservice (public `https://wifitest.zitoon.com`), exécute `hashcat -m 22000`
   selon le plan d'attaque, poste progression + résultat. Tourne quand Anqa est up (9h-21h).
-- **Stack** : Python + hashcat (Windows, CUDA, RTX 5070 Ti). Le worker lance hashcat en
+- **Stack** : Python + hashcat **6.2.6** (Windows, CUDA, RTX 5070 Ti). Mesure du 23/09,
+  même carte, `-m 22000 -d 1` : 6.2.6 = **1489 kH/s**, 7.1.2 = **1491 kH/s**. Pas
+  d'écart utile, le worker reste sur 6.2.6. Le binaire 7.1.2 est seulement dans
+  `C:\Tools\wifitest\hashcat-7.1.2\` (le pod, lui, l'utilise déjà : le paquet Ubuntu
+  ne parle pas CUDA). Le worker lance hashcat en
   sous-process **suivable** (`subprocess.Popen`) et sonde `GET /jobs/{id}/cancel` toutes les 3 s :
   si annulation demandée, il tue hashcat et poste le statut `stopped`.
 - **Déploiement (résolu)** : **tâche planifiée `WifiTestWorker`** sur Anqa (`ONLOGON`, session
@@ -114,12 +119,25 @@ Une `.fap` de confort (afficher l'état, déclencher une capture) pourra venir p
   `C:\Tools\wifitest\stop_worker.ps1`. ⚠️ hashcat doit être lancé depuis son dossier
   (`cwd = dossier hashcat`) sinon `./OpenCL/: No such file` (BUG-002).
 
-### 4.6 Worker RunPod (`worker-runpod/`)
-- **Pod** (pas serverless) multi-RTX 4090, démarré à la demande (Anqa down ou tier lourd).
-- Template : image hashcat + **wordlists sur network volume** (persistant → pas de re-download).
-  Boot → pull du job → crack → post résultat → **self-terminate** (pas d'idle payé).
-- **Stack** : `[TODO]` API RunPod (cf. skills `/vb-gpu-loue`, `/vb-rebuild-serverless`).
-  3e compte RunPod dédié à WifiTest = choix d'isolation de facturation (optionnel).
+### 4.6 Worker RunPod (FEAT-004)
+- **4 pods d'une carte**, pas un pod de 4×4090 (ce format n'a presque jamais de stock).
+  `WIFITEST_POD_COUNT` (défaut 4) × `WIFITEST_POD_GPU_COUNT` (défaut 1). Facturé sur le
+  **compte 2** (`RUNPOD_API_KEY_2`). Le compte 1 (serverless `gqqfm-serverless`) n'est
+  pas débité.
+- **Cartes acceptées**, dans l'ordre : `gpuTypeIdList` (RunPod prend la **première qui
+  a du stock**) — 4090, 3090, 4080 SUPER, 4080, 3090 Ti, 4070 Ti SUPER, 4070 Ti, 5090.
+  Pas de A100/H100.
+- Chaque pod reçoit une **part** du même job (`--skip` / `--limit` sur chaque passe).
+  Le premier mot de passe trouvé annule les autres. Une part `not_found` ne clôt le job
+  que lorsque les quatre ont fini. Un pod mort libère sa part au bout du délai stale.
+- Image `nvidia/cuda:12.4.1-runtime-ubuntu22.04`. Bootstrap : hashcat **7.1.2**, wordlist,
+  rockyou en best effort, puis **self-terminate**. Garde-fou `WIFITEST_MAX_POD_LIFE`
+  (90 min) et sortie 180 s sans job. Sans job actif, le dispatcher termine les pods.
+- `GET /jobs/next` : mode `pod` → seuls les workers `runpod*` ; `anqa` → l'inverse ;
+  `auto` → les deux, et les pods ne démarrent que si Anqa est injoignable.
+- Crédit UI : `clientBalance` par compte, avec e-mail masqué et nom du endpoint serverless.
+  Le bandeau indique aussi « paie les pods » sur le compte 2. `clientLifetimeSpend` n'est
+  pas lu (la clé répond Unauthorized sur ce champ, sans rapport avec le solde).
 
 ## 5. Protocole webservice (implémenté)
 **Statuts d'un job** : `queued → running → (found | not_found | error | stopped)`.

@@ -52,6 +52,7 @@
       <span class="mono">min</span>
     </div>
     <div class="credit" id="credit"></div>
+    <div class="podline" id="podline"></div>
   </div>
 
   <div class="drop" id="drop">
@@ -319,6 +320,7 @@ const anqaDot = document.getElementById('anqa-dot');
 const anqaState = document.getElementById('anqa-state');
 const wol = document.getElementById('wol');
 const credit = document.getElementById('credit');
+const podline = document.getElementById('podline');
 const modesEl = document.getElementById('modes');
 
 function setMode(m) {
@@ -349,11 +351,23 @@ async function status() {
     wol.hidden = !!d.anqa;
     setMode(d.mode);
     credit.innerHTML = (d.runpod || []).map(a => {
-      if (!a.ok || a.balance == null) return '<span class="chip">' + esc(a.label) + ' RunPod <b style="color:var(--ink-4)">n/a</b></span>';
+      const who = a.email ? ' · ' + a.email : '';
+      const eps = (a.endpoints || []).slice(0, 1).map(n => ' · ' + n).join('');
+      const role = a.pod ? ' · paie les pods' : '';
+      if (!a.ok || a.balance == null) return '<span class="chip">' + esc(a.label) + esc(who) + ' <b style="color:var(--ink-4)">crédit illisible</b></span>';
       const low = a.balance < 2;
-      const sp = a.spend_hr ? ' · ' + (+a.spend_hr).toFixed(2) + ' $/h' : '';
-      return '<span class="chip' + (low ? ' low' : '') + '">' + esc(a.label) + ' <b>$' + (+a.balance).toFixed(2) + '</b>' + sp + '</span>';
+      const sp = a.spend_hr ? ' · dépense ' + (+a.spend_hr).toFixed(2) + ' $/h' : '';
+      return '<span class="chip' + (low ? ' low' : '') + '">' + esc(a.label) + esc(who) + esc(eps) + esc(role) + ' <b>$' + (+a.balance).toFixed(2) + '</b>' + sp + '</span>';
     }).join('');
+    const p = d.pod || {};
+    const names = p.gpus || [];
+    const shown = names.slice(0, 4).join(', ') + (names.length > 4 ? '…' : '');
+    let line = p.dispatcher
+      ? ((p.pod_count || 1) + ' pods × ' + (p.gpu_count || 1) + ' GPU · ' + shown
+         + (p.active ? ' · ' + p.active + ' en cours' : ' · en attente d\'un job'))
+      : 'dispatcher coupé — aucun pod';
+    if (p.error) line += ' · ' + p.error;
+    podline.textContent = line;
   } catch (_) {}
 }
 status();

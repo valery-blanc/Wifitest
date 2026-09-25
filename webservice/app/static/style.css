@@ -219,6 +219,7 @@ td.c-act { white-space: nowrap; }
 .tab:hover { color: var(--ink-2); }
 .tab.is-active { background: var(--bg-3); color: var(--ink); }
 .credit { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.podline { font-family: var(--mono); font-size: 0.72rem; color: var(--ink-3); margin-top: 6px; }
 .credit .chip b { color: var(--success); }
 .credit .chip.low b { color: var(--warn); }
 

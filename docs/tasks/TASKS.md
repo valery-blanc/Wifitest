@@ -1,11 +1,13 @@
 # TASKS
 
-## ⏭️ REPRISE — état au 23/09
-- **Dernier commit** : `9aeadce` — FEAT-002 (cascade bornée) + FEAT-003 (suivi/barre, Play,
-  budget par job, worker Anqa sans fenêtre). Poussé sur `main`.
-- **Déploiement** : webservice **Fez** (actif) + **Avignon** (secours) à jour (health 200) ;
-  **worker Anqa** relancé avec le nouveau `worker.py` via tâche `WifiTestWorker` (lanceur VBS
-  caché, logs → `C:\Tools\wifitest\worker.log`).
+## ⏭️ REPRISE — état au 25/09
+- **Dernier commit** : FEAT-004 (ce commit) — 4 pods × 1 GPU, `gpuTypeIdList`, crédit
+  identifié par compte. Poussé sur `main`. Val : « je valide en l'état ».
+- **Déploiement** : webservice **Fez** (actif) + **Avignon** (secours) à jour du code FEAT-004.
+  **Worker Anqa** : le processus tourne encore l'ancien `worker.py` (pas recopié ; inutile
+  tant que le mode est `pod`, Anqa ne reçoit pas de job). Le fichier du dépôt, lui, sait
+  découper en parts. Hashcat Anqa reste **6.2.6** (7.1.2 mesurée identique, 1489 vs 1491 kH/s,
+  binaire posé à côté dans `C:\Tools\wifitest\hashcat-7.1.2\`, non branché).
 - **Tests** : pas de suite automatisée dans ce projet. Validations **manuelles en réel** sur
   GPU Anqa (réseau `radar`), mesurées au commit `9aeadce` : cascade (90 s), Stop en file/en
   cours, Poubelle+pcap, barre/passe/budget par job, Play.
@@ -14,10 +16,14 @@
   sûr », 23/09) → crack **arrêté**, jobs + pcap **purgés**. Ne pas re-cracker. Avant tout
   crack d'un SSID à nom de box FAI → **demander confirmation** (mémoire
   `wifitest-perimetre-autorisation`).
-- ⏳ **Ouvert (avec motif)** : pod RunPod ne cracke pas encore (bootstrap corrigé, **non
-  validé** — besoin des logs du pod en direct) ; capture **5 GHz** bloquée matériel (carte
-  BW16 à acquérir) ; app **Android** M2 non démarrée ; candidats **FAI déduits du SSID**
-  (raffinement de la cascade FEAT-002) ; durcissement sécurité webservice (rate limit/TTL).
+- ⏳ **Ouvert (avec motif)** : capture **5 GHz** bloquée matériel (carte BW16 à acquérir) ;
+  app **Android** M2 non démarrée ; candidats **FAI déduits du SSID** (raffinement de la
+  cascade FEAT-002) ; durcissement sécurité webservice (rate limit/TTL).
+- **FEAT-004** : commité, déployé. **4 pods × 1 GPU** sur le compte 2, `gpuTypeIdList`
+  (4090, 3090, 4080 SUPER, 4080, 3090 Ti, 4070 Ti SUPER, 4070 Ti, 5090 — la première en
+  stock). Mode UI encore sur **`pod`** : le prochain pcap loue jusqu'à 4 cartes.
+  🔴 **Pas rejoué en réel** : l'essai du 23/09 n'a trouvé aucun 4×4090, le job a été
+  arrêté, rien facturé. Le découpage en parts n'a pas été vu sur un vrai pod.
 
 ## Architecture — décisions verrouillées (2026-09-21)
 - [x] Transport ESP32 → téléphone : **USB-CDC (OTG)**
@@ -77,6 +83,8 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] **Worker Anqa armé** : hashcat 6.2.6 (CUDA) dans `C:\Tools\wifitest\`, `worker.py`,
   `visitor_wordlist.txt` (mdp connu), lanceur `run_worker.bat` (`-d 1` = RTX). Crack via
   `run_worker.bat --once` (ou boucle sans arg). Validé sur la prod (2026-09-22).
+  Mesure 23/09 sur la 5070 Ti (`-m 22000 -d 1`) : 6.2.6 = 1489 kH/s, 7.1.2 = 1491 kH/s.
+  Pas de bascule. 7.1.2 est installé à côté, non branché.
 - [ ] `worker-runpod/` : template pod multi-4090 + wordlists sur network volume + self-terminate
 - [ ] Auto-spin sur Anqa down / tier lourd
 - [ ] Plan d'attaque en tiers (candidats FAI → rockyou+règles → masques) — ⚠️ tiers rockyou+règles(best64/OneRule)+masques **livrés par FEAT-002** (cascade bornée) ; reste les **candidats déduits du SSID** (défauts FAI).
@@ -104,7 +112,7 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [!] **Pod ne cracke pas encore** : au 1er test l'image `dizcza/docker-hashcat` avait un ENTRYPOINT (dockerArgs ignoré) ; passé à `nvidia/cuda:...` mais le worker n'a pas tourné (image de base **sans curl** → le fetch du bootstrap échouait). **Fix appliqué** (dockerArgs installe curl avant de fetch) — **à VALIDER demain** avec logs du pod en direct.
 - [x] **Dispatcher DÉSACTIVÉ pour la nuit** (`WIFITEST_DISPATCHER=0` sur Fez, mode=anqa) → aucun pod ne spinnera. Réactiver : `WIFITEST_DISPATCHER=1` + restart.
 - [ ] Demain : réactiver dispatcher, lancer 1 pod, tirer ses logs (RunPod), corriger le bootstrap si besoin → 1er crack via pod. ~~Worker Anqa permanent (tâche planifiée)~~ ✅ **FAIT (23/09)**.
-- [ ] **Divergence nœuds (§8, constat 23/09, non bloquant)** : Avignon `deploy/.env` n'a pas `WIFITEST_DISPATCHER`/`MAX_POD_LIFE`/`POD_IMAGE` (présents sur Fez). Sans effet aujourd'hui (`DISPATCHER_ON` défaut = OFF ; secrets partagés OK). **À la finalisation du pod** : mettre ces réglages *pod* dans le **compose versionné** (pas en `.env` local) pour survivre à la bascule Fez→Avignon.
+- [x] **Divergence nœuds** : réglages pod (`DISPATCHER`, image, `POD_COUNT`, `POD_GPU_COUNT`, `POD_GPUS`, durée max) dans le **compose versionné** (25/09). Ils écrasent le `.env` local.
 
 #### FEAT-001 — boutons Stop + Poubelle (2026-09-23)
 - [x] DB : colonnes `cancel` + `pcap` (migration idempotente) ; request_cancel / is_canceled / delete_job / count_pcap_refs.
@@ -135,3 +143,16 @@ hoppe et rate les trames de l'AP (M1/M3).
 - [x] Anqa : worker.py **stagé** (actif au prochain redémarrage du worker) ; `run_worker.bat` logue dans `worker.log` ; tâche `WifiTestWorker` relancée via **VBS caché** (`launch_hidden.vbs`) → plus de fenêtre au prochain lancement.
 - [x] Worker Anqa relancé (23/09) après arrêt du scan → nouveau worker.py chargé : passe affichée + budget par job validés en réel sur `radar`.
 - [x] Validation Val : « ok déploie les nouvelles features » (feu vert) ; validation réelle radar OK (budget 120 s pris en compte, passe `wordlist ciblée (1/7)`, found).
+
+#### FEAT-004 — 4 pods × 1 GPU + crédit identifiable (2026-09-23, validé en l'état 25/09)
+- [x] Compte du pod confirmé en prod : `RUNPOD_API_KEY_2` (pas le compte de serverless 1).
+- [x] 4 pods × 1 GPU, `gpuTypeIdList` (première carte en stock). Parts `--skip`/`--limit`.
+- [x] `gpuCount` configurable ; création en variables GraphQL ; erreur visible dans le bandeau.
+- [x] Crédit : e-mail masqué + endpoint + marque « paie les pods ». Plus de lecture de `clientLifetimeSpend`.
+- [x] Bootstrap : hashcat 7.1.2 officiel, pas de `-d` (toutes les cartes), self-terminate conservé.
+- [x] Réglages pod dans le compose versionné (dispatcher, image, gpu, count, durée max).
+- [x] Premier essai (23/09) : **aucun pod** — Anqa a claim le job en 20 s malgré le mode `pod`. Corrigé : `/jobs/next` respecte le mode.
+- [!] Crack réel via pod **non fait**. Essai 23/09 : RunPod sans stock pour un 4×4090 ;
+  Anqa avait d'abord volé le job (corrigé : le mode `pod` ne lui donne plus rien). Job
+  arrêté, aucun pod facturé. Le schéma 4×1 GPU est déployé mais pas rejoué.
+- [x] Confirmation Val (25/09) : « je valide en l'état » → commit + push.

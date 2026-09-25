@@ -68,19 +68,23 @@ def claim() -> dict | None:
 
 
 def post_result(job_id: str, status: str, password: str | None = None,
-                error: str | None = None) -> None:
+                error: str | None = None, slice_index: int | None = None) -> None:
+    body: dict = {"status": status, "password": password, "error": error}
+    if slice_index is not None:
+        body["slice"] = slice_index
     r = requests.post(f"{SERVER}/jobs/{job_id}/result", headers=HEADERS,
-                      json={"status": status, "password": password, "error": error},
-                      timeout=30)
+                      json=body, timeout=30)
     r.raise_for_status()
 
 
 def post_progress(job_id: str, progress: float, tried: int = 0,
-                  phase: str | None = None) -> None:
+                  phase: str | None = None, slice_index: int | None = None) -> None:
+    body: dict = {"progress": progress, "tried": tried, "phase": phase}
+    if slice_index is not None:
+        body["slice"] = slice_index
     try:
         requests.post(f"{SERVER}/jobs/{job_id}/progress", headers=HEADERS,
-                      json={"progress": progress, "tried": tried, "phase": phase},
-                      timeout=10)
+                      json=body, timeout=10)
     except requests.RequestException:
         pass
 
@@ -147,8 +151,32 @@ def _read_password(out_file: str) -> str | None:
     return None
 
 
+def _keyspace(hashcat_dir: str, attack: list[str]) -> int | None:
+    """Taille de la passe. None si hashcat ne sait pas la dire : la part 0 fera toute la passe."""
+    try:
+        r = subprocess.run([HASHCAT, "--keyspace", *attack], cwd=hashcat_dir or None,
+                           capture_output=True, text=True, timeout=120)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if r.returncode != 0:
+        return None
+    for line in reversed((r.stdout or "").splitlines()):
+        line = line.strip()
+        if line.isdigit():
+            return int(line)
+    return None
+
+
+def _bounds(keyspace: int, index: int, count: int) -> tuple[int, int]:
+    base, extra = divmod(keyspace, count)
+    skip = index * base + min(index, extra)
+    limit = base + (1 if index < extra else 0)
+    return skip, limit
+
+
 def _run_step(cmd: list[str], err_file: str, cwd: str | None, job_id: str,
-              start: float, budget: int, phase: str) -> tuple[bool, int | None]:
+              start: float, budget: int, phase: str,
+              slice_index: int | None = None) -> tuple[bool, int | None]:
     """Lance une passe hashcat en process suivable. Sonde l'annulation (kill si Stop) et
     remonte la progression (temps écoulé / budget) + la passe en cours. Retourne
     (canceled, returncode)."""
@@ -167,7 +195,7 @@ def _run_step(cmd: list[str], err_file: str, cwd: str | None, job_id: str,
             now = time.time()
             if now - last_prog > PROGRESS_EVERY:
                 pct = min(99.0, (now - start) / budget * 100.0)
-                post_progress(job_id, round(pct, 1), phase=phase)
+                post_progress(job_id, round(pct, 1), phase=phase, slice_index=slice_index)
                 last_prog = now
             time.sleep(3)
     return False, proc.returncode
@@ -190,12 +218,15 @@ def crack(job: dict) -> tuple[str, str | None, str | None]:
             return "error", None, ("aucune ressource de crack : définir WIFITEST_WORDLIST "
                                    "et/ou WIFITEST_ROCKYOU")
 
+        slice_i = int(job.get("slice") or 0)
+        slice_n = max(1, int(job.get("slice_count") or 1))
         common = [HASHCAT, "-m", "22000", "--quiet", "--potfile-disable",
                   "--outfile", out_file, "--outfile-format", "2", *HASHCAT_EXTRA]
         # Budget : celui du job (choisi dans l'UI) sinon le défaut du worker.
         budget = int(job.get("max_runtime") or MAX_RUNTIME)
         start = time.time()
         clean_ran = False
+        ran_any = False
         last_err = ""
 
         for i, (label, attack) in enumerate(steps):
@@ -203,14 +234,29 @@ def crack(job: dict) -> tuple[str, str | None, str | None]:
             if remaining < 5:
                 print(f"[{job_id}] budget épuisé, arrêt de la cascade", flush=True)
                 break
-            phase = f"{label} ({i + 1}/{len(steps)})"
+            part = ""
+            step = list(attack)
+            if slice_n > 1:
+                ks = _keyspace(hashcat_dir, attack)
+                if ks is None:
+                    if slice_i != 0:
+                        continue
+                else:
+                    skip, limit = _bounds(ks, slice_i, slice_n)
+                    if limit <= 0:
+                        continue
+                    step += ["--skip", str(skip), "--limit", str(limit)]
+                part = f" partie {slice_i + 1}/{slice_n}"
+            phase = f"{label} ({i + 1}/{len(steps)}){part}"
             post_progress(job_id, round((time.time() - start) / budget * 100.0, 1),
-                          phase=phase)
-            cmd = common + ["--runtime", str(remaining)] + attack
-            print(f"[{job_id}] passe {i + 1}/{len(steps)} : {label} "
+                          phase=phase, slice_index=slice_i if slice_n > 1 else None)
+            cmd = common + ["--runtime", str(remaining)] + step
+            ran_any = True
+            print(f"[{job_id}] passe {i + 1}/{len(steps)} : {label}{part} "
                   f"(reste {remaining}s)", flush=True)
             canceled, rc = _run_step(cmd, err_file, hashcat_dir, job_id, start,
-                                     budget, phase)
+                                     budget, phase,
+                                     slice_i if slice_n > 1 else None)
             if canceled:
                 print(f"[{job_id}] annulé (Stop)", flush=True)
                 return "stopped", None, None
@@ -226,7 +272,7 @@ def crack(job: dict) -> tuple[str, str | None, str | None]:
         pw = _read_password(out_file)
         if pw:
             return "found", pw, None
-        if clean_ran:
+        if clean_ran or not ran_any:
             return "not_found", None, None
         return "error", None, (last_err or "échec hashcat").strip()[:2000]
 
@@ -242,7 +288,9 @@ def handle_one() -> bool:
         status, password, error = crack(job)
     except Exception as exc:  # noqa: BLE001 — on remonte toute erreur au serveur
         status, password, error = "error", None, f"{type(exc).__name__}: {exc}"
-    post_result(jid, status, password, error)
+    slice_n = int(job.get("slice_count") or 1)
+    post_result(jid, status, password, error,
+                slice_index=int(job.get("slice") or 0) if slice_n > 1 else None)
     print(f"[{jid}] -> {status}" + (f" ({password})" if password else ""), flush=True)
     return True
 

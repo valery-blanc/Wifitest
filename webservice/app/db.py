@@ -59,6 +59,12 @@ def init_db() -> None:
                 _conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} {ddl}")
             except sqlite3.OperationalError:
                 pass
+        _conn.execute(
+            "CREATE TABLE IF NOT EXISTS job_slices ("
+            " job_id TEXT NOT NULL, slice INTEGER NOT NULL, worker_id TEXT,"
+            " state TEXT NOT NULL, updated_at REAL NOT NULL,"
+            " PRIMARY KEY (job_id, slice))"
+        )
         _conn.commit()
 
 
@@ -99,11 +105,25 @@ def list_jobs(limit: int = 100) -> list[dict]:
 
 
 def _requeue_stale(now: float) -> None:
-    """Remet en file les jobs 'running' dont le worker s'est tu (appelé sous _lock)."""
+    """Remet en file les jobs 'running' dont plus aucun worker ne donne signe (sous _lock)."""
+    stale = _conn.execute(
+        "SELECT id FROM jobs WHERE status='running' AND updated_at < ?",
+        (now - STALE_RUNNING_SECONDS,),
+    ).fetchall()
+    for row in stale:
+        _conn.execute("DELETE FROM job_slices WHERE job_id=?", (row["id"],))
     _conn.execute(
         "UPDATE jobs SET status='queued', worker_id=NULL, started_at=NULL,"
         " updated_at=? WHERE status='running' AND updated_at < ?",
         (now, now - STALE_RUNNING_SECONDS),
+    )
+
+
+def _drop_stale_slices(now: float) -> None:
+    """Libère une part dont le pod ne donne plus signe, sans toucher aux autres."""
+    _conn.execute(
+        "DELETE FROM job_slices WHERE state='running' AND updated_at < ?",
+        (now - STALE_RUNNING_SECONDS,),
     )
 
 
@@ -126,6 +146,141 @@ def claim_next_job(worker_id: str) -> dict | None:
         _conn.commit()
         row = _conn.execute("SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone()
     return _row_to_job(row)
+
+
+def claim_slice(worker_id: str, n: int) -> dict | None:
+    """Donne à un pod la prochaine part libre (0..n-1) du plus ancien job actif.
+    Le job passe 'running' à la première part. None si toutes les parts sont prises."""
+    now = time.time()
+    n = max(1, int(n))
+    with _lock:
+        _requeue_stale(now)
+        _drop_stale_slices(now)
+        rows = _conn.execute(
+            "SELECT * FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at"
+        ).fetchall()
+        for row in rows:
+            taken = {
+                r["slice"] for r in _conn.execute(
+                    "SELECT slice FROM job_slices WHERE job_id=? AND state='running'",
+                    (row["id"],),
+                )
+            }
+            free = [i for i in range(n) if i not in taken]
+            if not free:
+                continue
+            sl = free[0]
+            _conn.execute(
+                "INSERT OR REPLACE INTO job_slices (job_id, slice, worker_id, state, updated_at)"
+                " VALUES (?,?,?,'running',?)",
+                (row["id"], sl, worker_id, now),
+            )
+            if row["status"] == "queued":
+                _conn.execute(
+                    "UPDATE jobs SET status='running', worker_id=?, started_at=?, updated_at=?"
+                    " WHERE id=?",
+                    (worker_id, now, now, row["id"]),
+                )
+            else:
+                _conn.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now, row["id"]))
+            _conn.commit()
+            job = _row_to_job(_conn.execute(
+                "SELECT * FROM jobs WHERE id=?", (row["id"],)).fetchone())
+            job["slice"] = sl
+            job["slice_count"] = n
+            return job
+        _conn.commit()
+    return None
+
+
+def touch_slice(job_id: str, slice_index: int | None) -> None:
+    if slice_index is None:
+        return
+    now = time.time()
+    with _lock:
+        _conn.execute(
+            "UPDATE job_slices SET updated_at=? WHERE job_id=? AND slice=? AND state='running'",
+            (now, job_id, slice_index),
+        )
+        _conn.commit()
+
+
+def pod_target(n: int) -> int:
+    """Combien de pods garder pour le plus ancien job actif. 0 s'il n'y a rien à faire.
+    Une part déjà terminée ne justifie plus une machine."""
+    now = time.time()
+    n = max(1, int(n))
+    with _lock:
+        _drop_stale_slices(now)
+        row = _conn.execute(
+            "SELECT id FROM jobs WHERE status IN ('queued', 'running') ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if row is None:
+            _conn.commit()
+            return 0
+        done = _conn.execute(
+            "SELECT COUNT(*) AS c FROM job_slices WHERE job_id=? AND state!='running'",
+            (row["id"],),
+        ).fetchone()["c"]
+        _conn.commit()
+    return max(0, n - int(done))
+
+
+def finish_slice(job_id: str, slice_index: int, status: str,
+                 password: str | None = None, error: str | None = None) -> bool:
+    """Clôt une part. Un 'found' gagne et annule les autres. Un 'not_found' de part
+    ne clôt le job que quand plus aucune part ne tourne."""
+    assert status in ("found", "not_found", "error", "stopped")
+    now = time.time()
+    with _lock:
+        job = _conn.execute("SELECT status FROM jobs WHERE id=?", (job_id,)).fetchone()
+        if job is None:
+            return False
+        if job["status"] == "found":
+            _conn.execute(
+                "UPDATE job_slices SET state='done', updated_at=? WHERE job_id=? AND slice=?",
+                (now, job_id, slice_index),
+            )
+            _conn.commit()
+            return True
+        if status == "found":
+            _conn.execute(
+                "UPDATE jobs SET status='found', password=?, error=NULL, progress=100,"
+                " cancel=1, updated_at=? WHERE id=?",
+                (password, now, job_id),
+            )
+            _conn.execute(
+                "UPDATE job_slices SET state='done', updated_at=? WHERE job_id=?",
+                (now, job_id),
+            )
+            _conn.commit()
+            return True
+        _conn.execute(
+            "UPDATE job_slices SET state=?, updated_at=? WHERE job_id=? AND slice=?",
+            ("error" if status == "error" else "done", now, job_id, slice_index),
+        )
+        running = _conn.execute(
+            "SELECT COUNT(*) AS c FROM job_slices WHERE job_id=? AND state='running'",
+            (job_id,),
+        ).fetchone()["c"]
+        if running == 0 and job["status"] == "running":
+            done = _conn.execute(
+                "SELECT COUNT(*) AS c FROM job_slices WHERE job_id=? AND state='done'",
+                (job_id,),
+            ).fetchone()["c"]
+            if status == "stopped":
+                final, err = "stopped", None
+            else:
+                final, err = ("not_found", None) if done else ("error", error)
+            _conn.execute(
+                "UPDATE jobs SET status=?, error=?, progress=100, updated_at=?"
+                " WHERE id=? AND status='running'",
+                (final, err, now, job_id),
+            )
+        else:
+            _conn.execute("UPDATE jobs SET updated_at=? WHERE id=?", (now, job_id))
+        _conn.commit()
+    return True
 
 
 def update_progress(job_id: str, progress: float, tried: int,
